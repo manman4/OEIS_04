@@ -1,0 +1,9 @@
+*.txt
+*.pdf
+*.sage.py
+._*
+
+
+.env
+scripts/__pycache__
+399/399654/__pycache__
