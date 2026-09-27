@@ -1,7 +1,6 @@
 # a(0) = 1; 
 # a(2*n+1) = 4*a(n) + 4*Sum_{i,j,k>=0 and i+j+k=n-1} a(i)*a(j)*a(k) and 
-# a(2*n+2) = 6*Sum_{j=0..n} a(j)*a(n-j) + Sum_{i,j,k,l>=0 and i+j+k+l=n-1} a(i)*a(j)*a(k)*a(l) for n >= 0.
-
+# a(2*n+2) = 6*Sum_{k=0..n} a(k)*a(n-k) + Sum_{i,j,k,l>=0 and i+j+k+l=n-1} a(i)*a(j)*a(k)*a(l) for n >= 0.
 def A(n)
   ary = [1]
   (1..n).each{|i|
@@ -45,3 +44,4 @@ p ary = A(n)
 #   print " "
 #   puts j
 # }
+
