@@ -1,6 +1,6 @@
 # a(0) = 1; 
 # a(2*n+1) = 3*a(n) + Sum_{i,j,k>=0 and i+j+k=n-1} a(i)*a(j)*a(k) and 
-# a(2*n+2) = 3*Sum_{k=0..n} a(k)*a(n-k) for n >= 0,
+# a(2*n+2) = 3*Sum_{k=0..n} a(k)*a(n-k) for n >= 0.
 
 def A(n)
   ary = [1]
