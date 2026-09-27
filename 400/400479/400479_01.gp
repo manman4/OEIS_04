@@ -30,7 +30,7 @@ v = series_a(M);
 
 \\ Open once in write mode.  This truncates an existing b-file and avoids
 \\ reopening the file for every coefficient.
-out = fileopen("b400479.txt", "w");
+out = fileopen("b400479_1.txt", "w");
 for(n = 0, M,
   filewrite(out, Str(n, " ", polcoef(v, n)))
 );
