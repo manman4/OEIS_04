@@ -1,6 +1,6 @@
 # a(0) = 1; 
 # a(3*n+1) = 3*a(n), 
-# a(3*n+2) = 3*Sum_{k=0..n} a(k)*a(n-k) and
+# a(3*n+2) = 3*Sum_{k=0..n} a(k)*a(n-k) and 
 # a(3*n+3) = Sum_{i,j,k>=0 and i+j+k=n} a(i)*a(j)*a(k) for n >= 0.
 
 def A(n)
@@ -40,3 +40,4 @@ p ary = A(n)
 #   print " "
 #   puts j
 # }
+
