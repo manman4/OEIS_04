@@ -15,6 +15,9 @@
 \\ Each inner weight is updated from the preceding one, so factorials are
 \\ not recomputed in the loop.
 
+\\ 実行
+\\ gp -q -f ./400528_01.gp
+
 write_bfile(N) = {
   if(type(N) != "t_INT" || N < 0,
     error("n must be a nonnegative integer")
