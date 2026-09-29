@@ -16,7 +16,6 @@
 \\ not recomputed in the loop.
 
 \\ 実行
-\\ ls -l 400527_01.gp    
 \\ gp -q -f ./400527_01.gp
 
 write_bfile(N) = {
