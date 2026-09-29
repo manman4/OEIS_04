@@ -10,7 +10,7 @@ def A(n)
   ary
 end
 
-n = 1000
+n = 100
 ary = A(n)
 (0..n).each{|i| 
   j = ary[i]
