@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <gmp.h>
 
-#define N 1000
+#define N 500
 
 int main(void)
 {
