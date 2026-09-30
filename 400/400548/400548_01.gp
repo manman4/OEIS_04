@@ -5,25 +5,34 @@
 
 default(parisizemax, 4000000000);
 
-series_a(N) = {
+coefficients(N) = {
   if(type(N) != "t_INT" || N < 0,
     error("n must be a nonnegative integer")
   );
-  my(A = 1 + O(x^(N + 1)), q = 1);
+  \\ E.g.f. coefficients of A, H = exp(x*log(A)), and L = log(A).
+  \\ A = 1 + x*A*H, H' = H*(L+x*L'), L' = A*(H+x*H').
+  my(a = vector(N + 1), h = vector(N + 1), l = vector(N + 1));
+  a[1] = h[1] = 1;
 
-  \\ An error O(x^q) becomes O(x^(q+2)) after one defining iteration.
-  while(q <= N,
-    A = 1/(1 - x*exp(x*log(A)) + O(x^(N + 1)));
-    q += 2;
+  for(n = 1, N,
+    my(sa = 0, sh = 0, sl = 0, choose = 1);
+    for(j = 0, n - 1,
+      my(r = n - j, ah = choose*a[j + 1]*h[r]);
+      sa += ah;
+      sl += r*ah;
+      sh += choose*r*h[j + 1]*l[r];
+      if(j < n - 1, choose = choose*(n - 1 - j)/(j + 1));
+    );
+    a[n + 1] = n*sa;
+    h[n + 1] = sh;
+    l[n + 1] = sl;
   );
-  A;
+  a;
 };
 
 write_bfile(N) = {
-  my(A = series_a(N), values = vector(N + 1), factorial = 1);
+  my(values = coefficients(N));
   for(n = 0, N,
-    if(n > 0, factorial *= n);
-    values[n + 1] = factorial*polcoef(A, n);
     if(type(values[n + 1]) != "t_INT",
       error(Str("nonintegral coefficient at n=", n))
     );
