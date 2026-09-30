@@ -47,7 +47,15 @@ end
 def seq(max)
   s = stirling1_table(max)
   f = factorial_table(max)
-  (0..max).map { |n| a(n, s, f) }
+  (0..max).map{|n| a(n, s, f)}
 end
 
-p seq(20)
+n = 20
+ary = seq(n)
+(0..n).each{|i|
+  j = ary[i]
+  break if j.to_s.size > 1000
+  print i
+  print " "
+  puts j
+}
