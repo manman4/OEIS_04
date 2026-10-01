@@ -51,7 +51,7 @@ def seq(max)
   (0..max).map{|n| a(n, s, f)}
 end
 
-n = 420
+n = 400
 ary = seq(n)
 (0..n).each{|i|
   j = ary[i]
