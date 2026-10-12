@@ -1,6 +1,6 @@
-"""Compute A400980 for 1 <= n <= 10000 using exact integer arithmetic.
+"""Compute A400980 for 0 <= n <= 10000 using exact integer arithmetic.
 
-a(n) = Sum_{j=1..n} A400979(j), where
+a(n) = Sum_{j=0..n} A400979(j), where
 A400979(j) = max(r + s - j : r,s >= 1 and r!*s! divides j!).
 Computes A400979 internally: no input files or other sequence scripts needed.
 Requires NumPy. Run: python3 400980_01.py
@@ -26,9 +26,11 @@ def primes_up_to(limit):
 
 
 def compute_a400979(limit):
-    """Return a(1), ..., a(limit); no floating-point divisibility tests."""
-    if not 1 <= limit <= 10000:
-        raise ValueError("limit must be between 1 and 10000")
+    """Return A400979(0), ..., A400979(limit), with A400979(0)=2."""
+    if not 0 <= limit <= 10000:
+        raise ValueError("limit must be between 0 and 10000")
+    if limit == 0:
+        return [2]
     primes = primes_up_to(limit)
     indices = np.arange(limit + 1, dtype=np.int32)
     # valuations[m,j] = v_p(m!). All entries and sums fit in int32:
@@ -42,7 +44,8 @@ def compute_a400979(limit):
                 break
             valuations[:, j] += quotient
 
-    values = []
+    # At j=0, the only positive pair is (r,s)=(1,1), giving 2.
+    values = [2]
     for n in range(1, limit + 1):
         # (n,1) is admissible, so a(n) >= 1. Each index is <= n.
         # If E = r+s-n > 0, (n+1)...(n+E) divides C(n+E,r).
@@ -90,7 +93,7 @@ def compute_a400979(limit):
 
 
 def compute(limit):
-    """Return A400980(1), ..., A400980(limit) without reading any b-file."""
+    """Return A400980(0), ..., A400980(limit) without reading any b-file."""
     return list(accumulate(compute_a400979(limit)))
 
 
@@ -103,7 +106,7 @@ def main():
     started = perf_counter()
     values = compute(args.limit)
     args.output.write_text(
-        "".join(f"{n} {value}\n" for n, value in enumerate(values, 1)),
+        "".join(f"{n} {value}\n" for n, value in enumerate(values)),
         encoding="ascii",
     )
     print(f"Wrote {len(values)} terms to {args.output}; "
