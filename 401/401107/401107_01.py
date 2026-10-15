@@ -2,7 +2,7 @@
 
 T(n,k) = max{d : 1 <= d <= n and d | binomial(n,k)}, 1 <= k < n.
 Usage: python3 401107_01.py [N]   (default N = 100).
-The b-file index starts at 1, with index (n-2)*(n-1)//2 + k for T(n,k).
+The b-file index starts at 2, with index 1+(n-2)*(n-1)//2+k for T(n,k).
 There are N*(N-1)//2 terms through row N.
 
 This standalone script uses exact integer arithmetic and the standard
@@ -130,7 +130,7 @@ def main() -> None:
     if args.N < 2:
         parser.error("N must be at least 2")
 
-    index = 0
+    index = 1
     with OUTPUT.open("w", encoding="utf-8") as output:
         for n, row in rows(args.N):
             for value in row:
@@ -138,9 +138,9 @@ def main() -> None:
                 output.write(f"{index} {value}\n")
             if n % 100 == 0 or n == args.N:
                 output.flush()
-                print(f"Completed row n = {n} ({index} terms)", flush=True)
-    assert index == args.N * (args.N - 1) // 2
-    print(f"Wrote {index} terms (rows n = 2..{args.N}) to {OUTPUT}")
+                print(f"Completed row n = {n} ({index - 1} terms)", flush=True)
+    assert index == 1 + args.N * (args.N - 1) // 2
+    print(f"Wrote {index - 1} terms (rows n = 2..{args.N}) to {OUTPUT}")
 
 
 if __name__ == "__main__":
