@@ -2,4 +2,3 @@
 T(n, k) = my(b=binomial(n, k), d=n); while(b%d, d--); d;
 for(n=2, 13, for(k=1, n-1, print1(T(n, k), ", ")));
 
-
