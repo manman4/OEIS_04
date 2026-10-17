@@ -1,13 +1,12 @@
-# A401176：n ≥ 2 における非負性の証明
+# A401176の非負性の証明
 
 ## 定義
 
-$\operatorname{spf}(k)$ を合成数 $k$ の最小素因数とし、
+$`\mathrm{spf}(k)`$ を合成数 $`k`$ の最小素因数とし、非負整数 $`n`$ に対して
 
-$$
-a(n)=n-\min_{\substack{k>n\\k\text{ は合成数}}}
-\bigl(k-\operatorname{spf}(k)\bigr)
-$$
+```math
+a(n)=n-\min_{k\gt n,\ k\text{ composite}} (k-\mathrm{spf}(k))
+```
 
 と定める。
 
@@ -15,66 +14,59 @@ $$
 
 ## 主張
 
-すべての整数 $n\ge2$ に対して、
+すべての整数 $`n\ge2`$ に対して、
 
-$$
-\boxed{a(n)\ge0}
-$$
+```math
+a(n)\ge0
+```
 
 が成り立つ。
 
 ## 証明
 
-$n$ より大きい最初の偶数を $k_0$ とする。すなわち、
+$`n\gt1`$ を整数とし、$`n`$ より大きい最初の偶数を $`k_0`$ とする。$`n`$ が偶数なら $`k_0=n+2`$、奇数なら $`k_0=n+1`$ なので、
 
-$$
-k_0=
-\begin{cases}
-n+2 & (n\text{ が偶数}),\\
-n+1 & (n\text{ が奇数}).
-\end{cases}
-$$
+```math
+n\lt k_0\le n+2
+```
 
-$n\ge2$ より $k_0\ge4$ である。したがって $k_0$ は合成数で、
-$\operatorname{spf}(k_0)=2$ となる。よって、
+である。また、$`k_0\ge4`$ であるため、$`k_0`$ は合成数であり、$`\mathrm{spf}(k_0)=2`$ となる。したがって、
 
-$$
-k_0-\operatorname{spf}(k_0)=
-\begin{cases}
-n & (n\text{ が偶数}),\\
-n-1 & (n\text{ が奇数})
-\end{cases}
-\le n.
-$$
+```math
+k_0-\mathrm{spf}(k_0)=k_0-2\le n.
+```
 
-$k_0$ は最小値を取る範囲に含まれるため、
+$`k_0`$ は最小値を取る範囲に含まれるため、
 
-$$
-\min_{\substack{k>n\\k\text{ は合成数}}}
-\bigl(k-\operatorname{spf}(k)\bigr)
-\le k_0-\operatorname{spf}(k_0)\le n.
-$$
+```math
+\min_{k\gt n,\ k\text{ composite}} (k-\mathrm{spf}(k))\le k_0-2\le n.
+```
 
 これを定義に代入すると、
 
-$$
+```math
 a(n)\ge n-n=0.
-$$
+```
 
 以上で証明された。
 
 ## 補足
 
-同じ証明から、奇数 $n\ge3$ では $a(n)\ge1$ も分かる。
+奇数 $`n\ge3`$ では $`k_0=n+1`$ なので、同じ証明から $`a(n)\ge1`$ も分かる。
 
-また、$n=0,1$ では、合成数 $k$ に対して
-$\operatorname{spf}(k)\le k/2$ かつ $k\ge4$ なので、
+また、合成数 $`k`$ に対して $`\mathrm{spf}(k)\le k/2`$ かつ $`k\ge4`$ なので、
 
-$$
-k-\operatorname{spf}(k)\ge k/2\ge2.
-$$
+```math
+k-\mathrm{spf}(k)\ge k/2\ge2.
+```
 
-$k=4$ で等号が成り立つため、$a(0)=-2$、$a(1)=-1$ となる。
+$`k=4`$ で等号が成り立つため、$`n=0,1`$ のときの最小値はともに2であり、
+
+```math
+a(0)=-2,\quad a(1)=-1.
+```
+
+となる。
 
 ## 関連リンク
 
