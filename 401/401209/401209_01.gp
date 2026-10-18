@@ -2,7 +2,11 @@
 a(n, k) = sum(j=1, k, vecmax(factor(n+j)[, 1])>k);
 for(n=1, 13, for(k=1, n, print1(a(k, n-k+1), ", ")));
 
+
 \\ For n >= k >= 1, A(n,k) = k - A080786(n+k,k) + A080786(n,k).
+
 B(n,k) = 1 + sum(j=2,n,vecmax(factor(j)[,1])<=k);
+for(n=1, 13, for(k=1, n, print1(B(n, k), ", ")));
+
 A(n,k) = k - B(n+k,k) + B(n,k);
 for(n=1, 13, for(k=1, n, print1(a(k, n-k+1)-A(k, n-k+1), ", ")));
