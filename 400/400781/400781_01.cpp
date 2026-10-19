@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 #include <fcntl.h>
 #include <sys/file.h>
@@ -22,6 +23,14 @@
 
 using U = std::uint64_t;
 struct Small { U sum; std::array<int, 3> x{}; };
+
+int parse_integer(const std::string& text) {
+    int value = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+        throw std::runtime_error("invalid integer: " + text);
+    return value;
+}
 
 U parse_unsigned(const std::string& text) {
     U value = 0;
@@ -233,6 +242,7 @@ class Search {
             save_bfile(bfile, n, value, static_cast<U>(reps.size()), static_cast<U>(chosen.size()));
         // Only machine-readable result columns go to stdout.
         std::cout << n << ' ' << value << ' ' << chosen.size() << '\n' << std::flush;
+        if (!std::cout) throw std::runtime_error("error writing standard output");
         std::ostringstream detail;
         detail << "result n=" << n << " N=" << value << " representations=" << reps.size()
                << " max_pairs=" << chosen.size() << " minimum_proved=" << minimum_proved << '\n';
@@ -269,8 +279,12 @@ class Search {
 
 public:
     Search(int exponent, int maxbase, std::string output_file)
-        : n(exponent), m(maxbase), p(m+1), prefix(m+1), used(m+1), bfile(std::move(output_file)) {
+        : n(exponent), m(maxbase), bfile(std::move(output_file)) {
         if (n < 1 || n > 6 || m < n || m > 10000) throw std::runtime_error("require 1<=n<=6 and n<=M<=10000");
+        const auto size = static_cast<std::size_t>(m) + 1;
+        p.resize(size);
+        prefix.resize(size);
+        used.resize(size);
         for (int x = 1; x <= m; ++x) {
             U v = 1;
             for (int j = 0; j < n; ++j) {
@@ -285,6 +299,8 @@ public:
     }
 
     bool target(U value) {
+        if (!value || value > limit)
+            throw std::runtime_error("targets requires 1<=value<=M^n; increase M for larger candidates");
         const bool found = check(value, 0);
         std::cerr << (found ? "upper_bound " : "rejected ") << n << ' ' << value << " representations=" << reps.size() << '\n';
         if (found) emit_result(value, false);
@@ -414,12 +430,30 @@ int main(int argc, char** argv) {
             } else args.push_back(argument);
         }
         if (args.size() < 2) throw std::runtime_error("usage: 400781_01 n M [--chunks maximum [width] | --range first maximum [width] | --inspect value | --targets file] [--bfile path | --no-bfile]");
-        Search search(std::stoi(args[0]), std::stoi(args[1]), bfile);
+        Search search(parse_integer(args[0]), parse_integer(args[1]), bfile);
         if (args.size() == 4 && args[2] == "--targets") {
+            if (!std::filesystem::is_regular_file(args[3]))
+                throw std::runtime_error("targets requires a regular file: " + args[3]);
             std::ifstream in(args[3]);
             if (!in) throw std::runtime_error("cannot read targets");
-            U index, value;
-            while (in >> index >> value) if (search.target(value)) break;
+            std::string line;
+            std::size_t line_number = 0;
+            while (std::getline(in, line)) {
+                ++line_number;
+                const auto first = line.find_first_not_of(" \t\r");
+                if (first == std::string::npos || line[first] == '#') continue;
+                try {
+                    std::istringstream row(line);
+                    std::string index, number, extra;
+                    if (!(row >> index >> number) || row >> extra)
+                        throw std::runtime_error("targets data must have two columns");
+                    (void)parse_unsigned(index);
+                    if (search.target(parse_unsigned(number))) break;
+                } catch (const std::exception& e) {
+                    throw std::runtime_error(args[3] + ":" + std::to_string(line_number) + ": " + e.what());
+                }
+            }
+            if (in.bad() || (in.fail() && !in.eof())) throw std::runtime_error("error reading targets: " + args[3]);
         } else if ((args.size() == 4 || args.size() == 5) && args[2] == "--chunks")
             search.chunks(parse_unsigned(args[3]), args.size() == 5 ? parse_unsigned(args[4]) : (U{1}<<32));
         else if ((args.size() == 5 || args.size() == 6) && args[2] == "--range")
