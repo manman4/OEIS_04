@@ -2,11 +2,12 @@
 
 A(n,k) counts distinct values of s_k(n+1), ..., s_k(n+k), where s_k(m)
 is the largest divisor of m with all prime factors strictly less than k.
-In particular, s_1(m) = s_2(m) = 1.
+The square array has n >= 0 and k >= 1.
+In particular, s_1(m) = s_2(m) = 1, and s_k(1) = 1.
 
-Order: A(1,1), A(1,2), A(2,1), A(1,3), A(2,2), A(3,1), ...
-Antidiagonal d has n+k=d+1 and contains d terms.
-The b-file has indices 1..N*(N+1)//2, not square-array row indices.
+Order: A(0,1), A(0,2), A(1,1), A(0,3), A(1,2), A(2,1), ...
+Antidiagonal d has n+k=d and contains d terms (n = 0..d-1).
+The b-file has flattened indices 0..N*(N+1)//2-1.
 
 Usage: python3 401328_01.py [N]  (default N = 100).
 The output file is saved beside this script.
@@ -41,14 +42,14 @@ def antidiagonals(limit: int) -> Iterator[list[int]]:
         raise ValueError("N must be at least 1")
 
     is_prime = prime_flags(limit + 1)
-    for total in range(2, limit + 2):
+    for total in range(1, limit + 1):
         # For n+k=total, the interval is [total-k+1, total].
         # Start with s_1(m)=1, and increase k while extending this interval.
         components = [1] * (total + 1)
         frequencies: dict[int, int] = {}
         diagonal = []
 
-        for k in range(1, total):
+        for k in range(1, total + 1):
             # Raising the strict cutoff from k-1 to k introduces exactly
             # the prime p=k-1, if prime. Include its full power in each
             # multiple m, updating frequencies only for the old interval.
@@ -81,16 +82,16 @@ def antidiagonals(limit: int) -> Iterator[list[int]]:
 
 
 def write_bfile(limit: int, output: Path = OUTPUT) -> int:
-    """Write N complete antidiagonals with flattened indices starting at 1."""
+    """Write N complete antidiagonals with flattened indices starting at 0."""
     if limit < 1:
         raise ValueError("N must be at least 1")
-    index = 1
+    index = 0
     with output.open("w", encoding="utf-8") as stream:
         for diagonal in antidiagonals(limit):
             for value in diagonal:
                 stream.write(f"{index} {value}\n")
                 index += 1
-    return index - 1
+    return index
 
 
 def main() -> None:
