@@ -1,4 +1,4 @@
-"""Write the first N downward antidiagonals of A401328 to b401328.txt.
+"""Write antidiagonal rows 0..N of A401328 to b401328.txt.
 
 A(n,k) counts distinct values of s_k(n+1), ..., s_k(n+k), where s_k(m)
 is the largest divisor of m with all prime factors strictly less than k.
@@ -6,13 +6,14 @@ The square array has n >= 0 and k >= 1.
 In particular, s_1(m) = s_2(m) = 1, and s_k(1) = 1.
 
 Order: A(0,1), A(0,2), A(1,1), A(0,3), A(1,2), A(2,1), ...
-Antidiagonal d has n+k=d and contains d terms (n = 0..d-1).
-The b-file has flattened indices 0..N*(N+1)//2-1.
+Antidiagonal row d has n+k=d+1 and contains d+1 terms (n = 0..d).
+Rows 0..N contain (N+1)*(N+2)//2 terms in total.
+The b-file has flattened indices 0..(N+1)*(N+2)//2-1.
 
 Usage: python3 401328_01.py [N]  (default N = 100).
 The output file is saved beside this script.
 Only the Python standard library and exact integer arithmetic are used.
-Complete antidiagonals are streamed using O(N) working memory.
+Complete antidiagonals are streamed using O(N+1) working memory.
 """
 
 import argparse
@@ -26,7 +27,7 @@ OUTPUT = Path(__file__).resolve().with_name("b401328.txt")
 
 
 def prime_flags(limit: int) -> list[bool]:
-    """Return primality flags for integers 0..limit (limit >= 2)."""
+    """Return primality flags for integers 0..limit (limit >= 1)."""
     flags = [True] * (limit + 1)
     flags[0] = flags[1] = False
     for p in range(2, isqrt(limit) + 1):
@@ -37,12 +38,12 @@ def prime_flags(limit: int) -> list[bool]:
 
 
 def antidiagonals(limit: int) -> Iterator[list[int]]:
-    """Yield antidiagonals 1..limit, with n increasing within each."""
-    if limit < 1:
-        raise ValueError("N must be at least 1")
+    """Yield rows 0..limit inclusive, with n increasing within each."""
+    if limit < 0:
+        raise ValueError("N must be nonnegative")
 
     is_prime = prime_flags(limit + 1)
-    for total in range(1, limit + 1):
+    for total in range(1, limit + 2):
         # For n+k=total, the interval is [total-k+1, total].
         # Start with s_1(m)=1, and increase k while extending this interval.
         components = [1] * (total + 1)
@@ -82,9 +83,9 @@ def antidiagonals(limit: int) -> Iterator[list[int]]:
 
 
 def write_bfile(limit: int, output: Path = OUTPUT) -> int:
-    """Write N complete antidiagonals with flattened indices starting at 0."""
-    if limit < 1:
-        raise ValueError("N must be at least 1")
+    """Write rows 0..N inclusive, with flattened indices starting at 0."""
+    if limit < 0:
+        raise ValueError("N must be nonnegative")
     index = 0
     with output.open("w", encoding="utf-8") as stream:
         for diagonal in antidiagonals(limit):
@@ -97,10 +98,10 @@ def write_bfile(limit: int, output: Path = OUTPUT) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("N", nargs="?", type=int, default=N,
-                        help=f"number of antidiagonals (default: {N})")
+                        help=f"last antidiagonal row, inclusive (default: {N})")
     args = parser.parse_args()
-    if args.N < 1:
-        parser.error("N must be at least 1")
+    if args.N < 0:
+        parser.error("N must be nonnegative")
     count = write_bfile(args.N)
     print(f"Saved {count} terms to {OUTPUT}")
 
