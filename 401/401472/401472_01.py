@@ -3,10 +3,9 @@
 Maximum size of a subset of {1, ..., n} whose subset products are all distinct.
 
 Dependency: z3-solver. No published sequence values are used as bounds.
-A checkpoint is verified and resumed automatically. Completed terms are printed
-and written on one line only after the requested range has been proved.
-
-PYTHONPATH=/tmp/erdos795-deps python3 -B "./401472_01.py" 40   
+A checkpoint is verified and resumed automatically. Each proved term is saved
+to b401472.txt as an n a(n) row. A one-line list is also printed and saved after
+the requested range has been proved.
 """
 
 import argparse
@@ -154,6 +153,12 @@ def atomic_write(path, text):
             temporary.unlink(missing_ok=True)
 
 
+def write_bfile(path, values):
+    """Replace the b-file with the complete proved prefix, avoiding duplicate rows."""
+    atomic_write(path, "".join(f"{n} {value}\n"
+                               for n, value in enumerate(values, 1)))
+
+
 def load_state(path):
     if not path.exists():
         return {"limit_completed": 0, "values": [], "witnesses": [],
@@ -229,7 +234,7 @@ def verify_state(state, solver, variables, factorizations, timeout_ms):
             raise ValueError(f"Saved cuts do not prove the upper bound at n={n}")
 
 
-def compute(limit, checkpoint, output, timeout_ms=0, verify_only=False):
+def compute(limit, checkpoint, output, timeout_ms=0, verify_only=False, bfile=None):
     state = load_state(checkpoint)
     universe = max(limit, state.get("universe_limit", 1),
                    max((a for cut in state["cuts"]
@@ -242,6 +247,8 @@ def compute(limit, checkpoint, output, timeout_ms=0, verify_only=False):
     print("Saved completed range verified.", file=sys.stderr, flush=True)
     if verify_only:
         return
+    if bfile is not None:
+        write_bfile(bfile, state["values"][:limit])
 
     for key, relation in initial_relations(universe).items():
         if key not in cuts:
@@ -298,9 +305,13 @@ def compute(limit, checkpoint, output, timeout_ms=0, verify_only=False):
             state["limit_completed"] = n
             pending = None
             save()
+            if bfile is not None:
+                write_bfile(bfile, state["values"][:limit])
             print(f"n={n}: {lower} (optimal)", file=sys.stderr, flush=True)
     except (KeyboardInterrupt, IncompleteCheck):
         save()
+        if bfile is not None:
+            write_bfile(bfile, state["values"][:limit])
         print(f"Paused. Only n=1..{state['limit_completed']} are proved; "
               f"checkpoint saved to {checkpoint}.", file=sys.stderr, flush=True)
         raise
@@ -318,6 +329,8 @@ def main():
     parser.add_argument("--checkpoint", type=Path,
                         default=directory/"problem795_checkpoint.json")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--bfile", type=Path, default=directory/"b401472.txt",
+                        help="save proved n a(n) rows incrementally (default: b401472.txt)")
     parser.add_argument("--timeout-ms", type=int, default=0,
                         help="per-query timeout; 0 disables the timeout")
     parser.add_argument("--verify-only", action="store_true")
@@ -325,10 +338,13 @@ def main():
     if not 1 <= args.N <= 100 or args.timeout_ms < 0:
         parser.error("N must be in 1..100; timeout must be nonnegative")
     output = args.output or directory/f"terms_1_to_{args.N}.txt"
-    if output.resolve() in {args.checkpoint.resolve(), Path(__file__).resolve()}:
-        parser.error("Output must differ from the script and checkpoint")
+    paths = [output.resolve(), args.bfile.resolve(),
+             args.checkpoint.resolve(), Path(__file__).resolve()]
+    if len(set(paths)) != len(paths):
+        parser.error("The b-file, one-line output, checkpoint and script must have different paths")
     try:
-        compute(args.N, args.checkpoint, output, args.timeout_ms, args.verify_only)
+        compute(args.N, args.checkpoint, output, args.timeout_ms, args.verify_only,
+                bfile=args.bfile)
     except KeyboardInterrupt:
         return 130
     except IncompleteCheck as error:
