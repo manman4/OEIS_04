@@ -5,6 +5,8 @@ Maximum size of a subset of {1, ..., n} whose subset products are all distinct.
 Dependency: z3-solver. No published sequence values are used as bounds.
 A checkpoint is verified and resumed automatically. Completed terms are printed
 and written on one line only after the requested range has been proved.
+
+PYTHONPATH=/tmp/erdos795-deps python3 -B "./401472_01.py" 40   
 """
 
 import argparse
