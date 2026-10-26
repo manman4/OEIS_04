@@ -2,7 +2,7 @@
  * Erdős Problem #795
  * a(n) = g(n) = A ⊆ {1,...,n} で、A のすべての部分集合（空集合を含む）の
  *        積が互いに異なるもののうち、最大の |A|
- * n = 1..N について計算し b401272_01.txt に "n a(n)" 形式で保存
+ * n = 1..N について計算し b401472_01.txt に "n a(n)" 形式で保存
  * （g(1) = 0: 空集合の積 1 と {1} の積 1 が等しいので 1 は使えない）
  *
  * 方針:
@@ -118,9 +118,9 @@ int main(int argc, char **argv) {
     list = malloc(sizeof(u64) * (HS / 2));
     if (!tab || !used || !list) { fprintf(stderr, "out of memory\n"); return 1; }
 
-    /* 既存の b401272_01.txt があれば、1 から連続して書かれている行を読み込み、
+    /* 既存の b401472_01.txt があれば、1 から連続して書かれている行を読み込み、
        その続きから計算して追記する（途中で止めても再開できる） */
-    const char *fname = "b401272_01.txt";
+    const char *fname = "b401472_01.txt";
     int start = 1;                              /* 次に計算する n */
     gval[0] = 0;
     FILE *in = fopen(fname, "r");
