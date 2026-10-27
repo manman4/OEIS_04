@@ -35,15 +35,28 @@
  * コンパイル: gcc -O2 -o 401472_01 401472_01.c
  *            （表の上限を上げるなら gcc -O2 -DMAXHB=28 -o 401472_01 401472_01.c）
  * 実行:       ./401472_01 [N]   （N の既定値は 30、上限 64）
- * 注意: 旧版で作った b401472_01.txt に n >= 38 の行があれば、再開前にその行を
- *       消すこと（再開時は既存の行をそのまま信じて続きを計算するため）。
+ * 再開時は、利用する保存値を n = 1 から再計算して照合する。誤りや不完全な行を
+ * 見つけた場合は、保存ファイルを変更せず停止する。既存の行を上界として信用しない。
  * 1 項ごとに b401472_01.txt へ書き出し（標準出力にも表示）。
- * 既存の b401472_01.txt があれば、その続きから計算を再開して追記する。
+ * 検証後に続きを計算する。保存は固有の一時ファイルからの原子的な置換とし、
+ * 書込み失敗・同時実行・シンボリックリンクへの出力を拒否する。
+ * 詳細な範囲と検証方法は 401472_c_safety.md を参照。
  */
+#define _POSIX_C_SOURCE 200809L
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define MAXN 64
 typedef uint64_t u64;
@@ -60,17 +73,29 @@ static int gval[MAXN + 1];   /* 計算済みの g(m) */
    空きは EMPTY（全ビット 1）で表す。指数ベクトルは高々 63 bit なので EMPTY と衝突しない。
    表の大きさは n ごとに、その n で P がとりうる最大の大きさ 2^target の 4 倍
    （埋まり具合 25% 以下）に合わせて決める。小さい表はキャッシュに乗るので速い。
-   MAXHB で上限を決める（MAXHB = 26 で tab 512 MB + list 128 MB）。 */
+   必要な大きさだけ確保し、MAXHB で上限を決める（26で最大512 MiB + 128 MiB）。 */
 #ifndef MAXHB
 #define MAXHB 26
 #endif
+#if MAXHB < 10 || MAXHB > 30
+#error "MAXHB must be in 10..30"
+#endif
+_Static_assert(sizeof(unsigned) * CHAR_BIT >= 32, "32-bit unsigned required");
+_Static_assert(SIZE_MAX >= UINT32_MAX, "32-bit size_t required");
 #define EMPTY (~(u64)0)
 static u64 *tab;
 static unsigned mask;      /* 表の大きさ - 1 */
 static u64 *list;          /* P の要素の一覧（追加順） */
 static long cap;           /* list に入る最大要素数 */
 static long top;
+static int allocated_hb;
+static int vector_bits;
+static const char result_path[] = "b401472_01.txt";
 
+/* The hash multiplication deliberately wraps modulo 2^64. */
+#ifdef __clang__
+__attribute__((no_sanitize("unsigned-integer-overflow")))
+#endif
 static inline unsigned hsh(u64 x) {
     x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33;
     return (unsigned)x & mask;
@@ -146,142 +171,265 @@ static void dfs(int x, int chosen) {
     dfs(x - 1, chosen);
 }
 
-int main(int argc, char **argv) {
-    int N = argc > 1 ? atoi(argv[1]) : 30;
-    if (N < 1 || N > MAXN) { fprintf(stderr, "N must be 1..%d\n", MAXN); return 1; }
-
+/* Rebuild the layout independently of any saved numerical results. */
+static int initialize_vectors(int N) {
+    if (N < 1 || N > MAXN) return 0;
+    np = 0;
+    memset(vec, 0, sizeof vec);
+    memset(npf, 0, sizeof npf);
+    memset(isprime_, 0, sizeof isprime_);
     for (int p = 2; p <= N; p++) {
-        int ip = 1;
-        for (int q = 2; q * q <= p; q++) if (p % q == 0) { ip = 0; break; }
-        if (ip) primes[np++] = p;
+        int prime = 1;
+        for (int q = 2; q <= p / q; q++)
+            if (p % q == 0) { prime = 0; break; }
+        if (prime) primes[np++] = p;
     }
-    /* 素数 p の成分の幅は、部分和の指数の最大値 v_p(N!) が入るビット数にする。
-       （部分和は 1..N の相異なる数の積なので、p の指数は v_p(N!) を超えない）
-       幅の合計が 64 を超えたら安全に詰められないので中止する。 */
     int shift[20], total = 0;
     for (int i = 0; i < np; i++) {
         int p = primes[i], vmax = 0;
-        for (long q = p; q <= N; q *= p) vmax += N / q;   /* v_p(N!) */
-        int w = 0;
-        while ((1 << w) <= vmax) w++;                       /* vmax を表せるビット数 */
+        for (int q = p; q <= N;) {
+            vmax += N / q;
+            if (q > N / p) break;
+            q *= p;
+        }
+        int width = 0;
+        while ((1u << width) <= (unsigned)vmax) width++;
         shift[i] = total;
-        total += w;
+        total += width;
     }
-    if (total > 63) { fprintf(stderr, "exponent vectors do not fit in 64 bits (%d bits)\n", total); return 1; }
-    for (int m = 1; m <= N; m++) {
-        u64 v = 0; int x = m;
-        for (int i = 0; i < np; i++) {
-            int e = 0;
-            while (x % primes[i] == 0) { x /= primes[i]; e++; }
-            v += (u64)e << shift[i];
-        }
-        vec[m] = v;
-    }
-    for (int m = 2; m <= N; m++) {
-        int x = m;
-        npf[m] = 0;
-        for (int i = 0; i < np; i++) {
-            if (x % primes[i] == 0) {
-                pf[m][npf[m]++] = primes[i];
-                while (x % primes[i] == 0) x /= primes[i];
-            }
-        }
-        isprime_[m] = (npf[m] == 1 && pf[m][0] == m);
-    }
-
-    tab = malloc(sizeof(u64) << MAXHB);
-    list = malloc(sizeof(u64) << (MAXHB - 2));
-    if (!tab || !list) { fprintf(stderr, "out of memory\n"); return 1; }
-
-    /* 既存の b401472_01.txt があれば、1 から連続して書かれている行を読み込み、
-       その続きから計算して追記する（途中で止めても再開できる） */
-    const char *fname = "b401472_01.txt";
-    int start = 1;                              /* 次に計算する n */
-    gval[0] = 0;
-    int junk = 0;                               /* 採用しなかった行が残っているか */
-    FILE *in = fopen(fname, "r");
-    if (in) {
-        char line[128];
-        int a, b;
-        /* 改行で終わる完全な行だけを採用する（書き込み途中で止まった最終行は捨てる） */
-        while (fgets(line, sizeof line, in)) {
-            size_t len = strlen(line);
-            if (len == 0 || line[len - 1] != '\n' ||
-                sscanf(line, "%d %d", &a, &b) != 2 || a != start || a > MAXN) { junk = 1; break; }
-            gval[a] = b;
-            start++;
-        }
-        fclose(in);
-    }
-    if (start > N) {
-        /* すでに N まで計算済み。ファイルには触らずに終わる（N を小さく指定しても行は消さない） */
-        printf("already computed up to n = %d\n", start - 1);
+    if (total > 63) {
+        fprintf(stderr, "Exponent vectors need %d bits; limit is 63.\n", total);
         return 0;
     }
-    FILE *f;
-    if (junk) {
-        /* 採用しなかった行（書きかけの行など）があるときだけ、正しい行を一時ファイルに
-           書いてから置き換える（置き換えの途中で止まっても元のファイルは残る） */
-        char tmpname[64];
-        snprintf(tmpname, sizeof tmpname, "%s.tmp", fname);
-        FILE *t = fopen(tmpname, "w");
-        if (!t) { perror(tmpname); return 1; }
-        for (int n = 1; n < start; n++) fprintf(t, "%d %d\n", n, gval[n]);
-        if (fclose(t) != 0 || rename(tmpname, fname) != 0) { perror("rewrite"); return 1; }
+    vector_bits = total;
+    for (int m = 2; m <= N; m++) {
+        int x = m;
+        for (int i = 0; i < np; i++) {
+            int exponent = 0;
+            while (x % primes[i] == 0) { x /= primes[i]; exponent++; }
+            vec[m] |= (u64)exponent << shift[i];
+            if (exponent) pf[m][npf[m]++] = primes[i];
+        }
+        isprime_[m] = npf[m] == 1 && pf[m][0] == m;
     }
-    /* 以降は追記（既存の行は書き換えない） */
-    f = fopen(fname, "a");
-    if (!f) { perror(fname); return 1; }
-    if (start > 1) printf("resume from n = %d\n", start);
+    return 1;
+}
 
-    if (start == 1) {                           /* g(1) = 0 */
-        gval[1] = 0;
-        fprintf(f, "1 0\n");
-        fflush(f);
-        printf("1 0\n");
-        fflush(stdout);
-        start = 2;
+static void release_tables(void) {
+    free(tab); free(list);
+    tab = NULL; list = NULL; allocated_hb = 0;
+}
+
+static int prepare_table(void) {
+    int hb = target + 2;
+    if (hb < 10) hb = 10;
+    if (hb > MAXHB) {
+        fprintf(stderr, "Search needs 2^%d table entries; MAXHB=%d. "
+                        "No unproved value was saved.\n", hb, MAXHB);
+        return 0;
     }
-    int g = gval[start - 1];
-    for (int n = start; n <= N; n++) {
-        /* n が素数なら、g(n-1) を与える集合に n を加えても条件は保たれる
-           （素数 n の指数ベクトルは n 自身にしか現れない成分をもつ）ので g(n) = g(n-1) + 1 */
-        if (np > 0) {
-            int isprime = 1;
-            for (int q = 2; q * q <= n; q++) if (n % q == 0) { isprime = 0; break; }
-            if (isprime) {
-                g++; gval[n] = g;
-                fprintf(f, "%d %d\n", n, g);
-                fflush(f);                      /* 1 項ごとにファイルへ書き出す */
-                printf("%d %d\n", n, g);
-                fflush(stdout);
-                continue;
+    size_t entries = (size_t)1 << hb;
+    long new_cap = 1L << (hb - 2);
+    if (entries > SIZE_MAX / sizeof *tab ||
+        (size_t)new_cap > SIZE_MAX / sizeof *list) {
+        fprintf(stderr, "Table byte count exceeds size_t.\n");
+        return 0;
+    }
+    if (allocated_hb != hb) {
+        release_tables();
+        tab = malloc(entries * sizeof *tab);
+        list = malloc((size_t)new_cap * sizeof *list);
+        if (!tab || !list) {
+            fprintf(stderr, "Out of memory; previous results are unchanged.\n");
+            release_tables();
+            return 0;
+        }
+        allocated_hb = hb;
+    }
+    mask = (1u << hb) - 1;
+    cap = new_cap;
+    for (size_t i = 0; i < entries; i++) tab[i] = EMPTY;
+    memset(cntp, 0, sizeof cntp);
+    top = 1; list[0] = 0; ins(0);
+    return 1;
+}
+
+static int next_value(int n, int *value) {
+    if (n == 1) { *value = 0; return 1; }
+    int previous = gval[n - 1];
+    if (isprime_[n]) { *value = previous + 1; return 1; }
+    target = previous + 1;
+    found = 0;
+    if (!prepare_table()) return 0;
+    if (add(vec[n])) {
+        for (int i = 0; i < npf[n]; i++) cntp[pf[n][i]]++;
+        dfs(n - 1, 1);
+    }
+    *value = previous + found;
+    return 1;
+}
+
+static int parse_limit(const char *text, int *value) {
+    if (!*text) return 0;
+    for (const char *p = text; *p; p++)
+        if (*p < '0' || *p > '9') return 0;
+    errno = 0;
+    char *end;
+    long parsed = strtol(text, &end, 10);
+    if (errno == ERANGE || *end || parsed < 1 || parsed > MAXN) return 0;
+    *value = (int)parsed;
+    return 1;
+}
+
+/* A stable sidecar lock survives atomic replacements of the result inode. */
+static int acquire_lock(void) {
+    const char lock_path[] = "b401472_01.txt.lock";
+    int fd = open(lock_path, O_RDWR | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0600);
+    if (fd < 0) { perror("open result lock"); return -1; }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink != 1) {
+        fprintf(stderr, "Result lock must be a regular file with one link.\n");
+        close(fd); return -1;
+    }
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        fprintf(stderr, "Cannot acquire result lock; another process may be using it.\n");
+        close(fd); return -1;
+    }
+    return fd;
+}
+
+static int parse_saved_line(char *line, int expected, int previous, int *value) {
+    char *p = line, *end;
+    while (isspace((unsigned char)*p)) p++;
+    if (!isdigit((unsigned char)*p)) return 0;
+    errno = 0;
+    long index = strtol(p, &end, 10);
+    if (errno == ERANGE || index != expected || index > MAXN ||
+        !isspace((unsigned char)*end)) return 0;
+    p = end;
+    while (isspace((unsigned char)*p)) p++;
+    if (!isdigit((unsigned char)*p)) return 0;
+    errno = 0;
+    long parsed = strtol(p, &end, 10);
+    if (errno == ERANGE || parsed < 0 || parsed >= expected) return 0;
+    while (isspace((unsigned char)*end)) end++;
+    if (*end || parsed < previous || parsed > previous + 1) return 0;
+    *value = (int)parsed;
+    return 1;
+}
+
+static int load_saved(int saved[MAXN + 1], int *count) {
+    *count = 0;
+    int fd = open(result_path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0) {
+        if (errno == ENOENT) return 1;
+        perror("open saved result"); return 0;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink != 1) {
+        fprintf(stderr, "Saved result must be a regular file with one link.\n");
+        close(fd); return 0;
+    }
+    FILE *in = fdopen(fd, "r");
+    if (!in) { perror("read saved result"); close(fd); return 0; }
+    char line[128];
+    int previous = 0, ok = 1;
+    while (fgets(line, sizeof line, in)) {
+        size_t length = strlen(line);
+        int value;
+        if (*count >= MAXN || !length || line[length - 1] != '\n' ||
+            !parse_saved_line(line, *count + 1, previous, &value)) {
+            fprintf(stderr, "Invalid or incomplete saved row %d; file unchanged.\n", *count + 1);
+            ok = 0; break;
+        }
+        saved[++*count] = value;
+        previous = value;
+    }
+    if (ferror(in)) { perror("read saved result"); ok = 0; }
+    if (fclose(in) != 0) { perror("close saved result"); ok = 0; }
+    return ok;
+}
+
+static int save_prefix(int count) {
+    struct stat st;
+    if (lstat(result_path, &st) == 0) {
+        if (!S_ISREG(st.st_mode) || st.st_nlink != 1) {
+            fprintf(stderr, "Refusing to replace a linked or nonregular result file.\n");
+            return 0;
+        }
+    } else if (errno != ENOENT) {
+        perror("inspect result path"); return 0;
+    }
+    char temporary[] = ".b401472_01.txt.tmp.XXXXXX";
+    int fd = mkstemp(temporary);
+    if (fd < 0) { perror("create result temporary file"); return 0; }
+    FILE *out = fdopen(fd, "w");
+    if (!out) {
+        int error = errno;
+        close(fd); unlink(temporary); errno = error;
+        perror("open result temporary file"); return 0;
+    }
+    int error = 0;
+    for (int n = 1; n <= count; n++) {
+        if (fprintf(out, "%d %d\n", n, gval[n]) < 0) {
+            error = errno ? errno : EIO; break;
+        }
+    }
+    if (!error && fflush(out) != 0) error = errno ? errno : EIO;
+    if (!error && fsync(fd) != 0) error = errno ? errno : EIO;
+    if (fclose(out) != 0 && !error) error = errno ? errno : EIO;
+    if (error) {
+        unlink(temporary); errno = error;
+        perror("save result; previous file unchanged"); return 0;
+    }
+    if (rename(temporary, result_path) != 0) {
+        error = errno; unlink(temporary); errno = error;
+        perror("replace result; previous file unchanged"); return 0;
+    }
+    return 1;
+}
+
+int main(int argc, char **argv) {
+    int N = 30;
+    if (argc == 2 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "-h"))) {
+        printf("Usage: %s [N] (N is 1..%d; default 30)\n", argv[0], MAXN);
+        return 0;
+    }
+    if (argc > 2 || (argc == 2 && !parse_limit(argv[1], &N))) {
+        fprintf(stderr, "Usage: %s [N]; N must be a decimal integer in 1..%d.\n", argv[0], MAXN);
+        return 1;
+    }
+    int lock_fd = acquire_lock();
+    if (lock_fd < 0) return 1;
+    int status = 1, count = 0, saved[MAXN + 1] = {0};
+    if (!load_saved(saved, &count) || !initialize_vectors(N)) goto done;
+    memset(gval, 0, sizeof gval);
+    int check_to = count < N ? count : N;
+    if (check_to)
+        fprintf(stderr, "Checking saved n=1..%d from the definition...\n", check_to);
+    for (int n = 1; n <= N; n++) {
+        int value;
+        if (!next_value(n, &value)) goto done;
+        if (n <= count && value != saved[n]) {
+            fprintf(stderr, "Saved value at n=%d is incorrect; file unchanged.\n", n);
+            goto done;
+        }
+        gval[n] = value;
+        if (n <= count) {
+            if (n == check_to)
+                fprintf(stderr, "Saved range n=1..%d verified.\n", check_to);
+        } else {
+            if (!save_prefix(n)) goto done;
+            if (printf("%d %d\n", n, value) < 0 || fflush(stdout) != 0) {
+                perror("write standard output; result file was saved"); goto done;
             }
         }
-        target = g + 1; found = 0;
-        /* |P| <= 2^target。表の大きさを 2^(target+2)（埋まり具合 25% 以下）にする */
-        int hb = target + 2;
-        if (hb < 10) hb = 10;
-        if (hb > MAXHB) {
-            fprintf(stderr, "n = %d needs 2^%d table entries; recompile with -DMAXHB=%d\n", n, hb, hb);
-            return 1;
-        }
-        mask = (1u << hb) - 1;
-        cap = 1L << (hb - 2);
-        for (unsigned i = 0; i <= mask; i++) tab[i] = EMPTY;
-        for (int x = 0; x <= N; x++) cntp[x] = 0;
-        top = 0; list[top++] = 0; ins(0);      /* P = {空集合の積} */
-        if (add(vec[n])) {                      /* n を必ず含める */
-            for (int i = 0; i < npf[n]; i++) cntp[pf[n][i]]++;
-            dfs(n - 1, 1);
-        }
-        if (found) g++;
-        gval[n] = g;
-        fprintf(f, "%d %d\n", n, g);
-        fflush(f);                              /* 1 項ごとにファイルへ書き出す */
-        printf("%d %d\n", n, g);
-        fflush(stdout);
     }
-    fclose(f);
-    return 0;
+    if (N <= count)
+        fprintf(stderr, "No new rows needed; all %d saved rows were retained.\n", count);
+    status = 0;
+done:
+    release_tables();
+    close(lock_fd);
+    return status;
 }
