@@ -2,12 +2,15 @@
  * Erdős Problem #795
  * a(n) = g(n) = A ⊆ {1,...,n} で、A のすべての部分集合（空集合を含む）の
  *        積が互いに異なるもののうち、最大の |A|
- * n = 1..N について計算し b401472_01.txt に "n a(n)" 形式で保存
+ * n = 1..N について計算し b401272_01.txt に "n a(n)" 形式で保存
  * （g(1) = 0: 空集合の積 1 と {1} の積 1 が等しいので 1 は使えない）
  *
  * 方針:
- *   各 m を素因数の指数ベクトル vec[m] とみなし、1 つの 64 bit 整数に
- *   素数ごと 6 bit で詰める（N <= 64 なら指数の和は 63 を超えない）。
+ *   各 m を素因数の指数ベクトル vec[m] とみなし、1 つの 64 bit 整数に詰める。
+ *   素数 p の成分の幅は v_p(N!) が入るビット数（部分和の指数は v_p(N!) 以下なので
+ *   足し算で桁あふれしない）。N = 64 でも幅の合計は 42 bit。
+ *   （旧版は素数ごと 6 bit 固定で、11 番目以降の素数（37 以上）が 64 bit を
+ *    はみ出していたため、n >= 38 の結果は信頼できない。）
  *   選んだ集合の部分和ベクトルの集合 P を保持し、x を加えられるのは
  *   (P + vec[x]) ∩ P = ∅ のときだけ（このとき P は P ∪ (P + vec[x]) に倍増）。
  *   g(n) は g(n-1) か g(n-1)+1 なので、n を必ず含む大きさ g(n-1)+1 の集合が
@@ -17,8 +20,16 @@
  *   - 探索中、{2,...,x} から追加で選べる個数は高々 g(x)（計算済み）なので
  *     chosen + g(x) < target なら枝刈りする（以前は x - 1 で抑えていた）。
  *
+ * 安全装置:
+ *   - 指数ベクトルが 64 bit に収まらない N では起動時にエラーで止まる。
+ *   - P がハッシュ表の容量を超えそうになったらエラーで止まる
+ *     （そこまでに b401272_01.txt へ書いた項は正しい）。
+ *
  * コンパイル: gcc -O2 -o 401272_01 401272_01.c
+ *            （表を大きくするなら gcc -O2 -DHB=26 -o 401272_01 401272_01.c）
  * 実行:       ./401272_01 [N]   （N の既定値は 30、上限 64）
+ * 注意: 旧版で作った b401272_01.txt に n >= 38 の行があれば、再開前にその行を
+ *       消すこと（再開時は既存の行をそのまま信じて続きを計算するため）。
  * 1 項ごとに b401272_01.txt へ書き出し（標準出力にも表示）。
  * 既存の b401272_01.txt があれば、その続きから計算を再開して追記する。
  */
@@ -35,8 +46,13 @@ static u64 vec[MAXN + 1];
 static int target, found;
 static int gval[MAXN + 1];   /* 計算済みの g(m) */
 
-/* 部分和ベクトルの集合 P（線形探索法のハッシュ表） */
-#define HB 22
+/* 部分和ベクトルの集合 P（線形探索法のハッシュ表）
+   表の大きさは 2^HB。P は最大 2^HB / 2 要素まで（埋まり具合 50% 以下）。
+   HB = 24 でメモリは約 210 MB（tab 128 MB + used 16 MB + list 64 MB）。
+   足りなければ gcc -DHB=26 ... のように大きくする（26 で約 840 MB）。 */
+#ifndef HB
+#define HB 24
+#endif
 #define HS (1u << HB)
 static u64 *tab;
 static unsigned char *used;
@@ -76,6 +92,11 @@ static void del(u64 x) {
 /* x を加えられれば P を更新して 1、できなければ 0 */
 static int add(u64 x) {
     int base = top;
+    /* P は倍増するので、表の容量（HS の半分）を超えるなら中止する（無限ループ防止） */
+    if ((long)base * 2 > (long)(HS / 2)) {
+        fprintf(stderr, "hash table too small: |P| would be %ld (increase HB)\n", (long)base * 2);
+        exit(1);
+    }
     for (int i = 0; i < base; i++) if (has(list[i] + x)) return 0;
     for (int i = 0; i < base; i++) { list[top] = list[i] + x; ins(list[top]); top++; }
     return 1;
@@ -103,12 +124,25 @@ int main(int argc, char **argv) {
         for (int q = 2; q * q <= p; q++) if (p % q == 0) { ip = 0; break; }
         if (ip) primes[np++] = p;
     }
+    /* 素数 p の成分の幅は、部分和の指数の最大値 v_p(N!) が入るビット数にする。
+       （部分和は 1..N の相異なる数の積なので、p の指数は v_p(N!) を超えない）
+       幅の合計が 64 を超えたら安全に詰められないので中止する。 */
+    int shift[20], total = 0;
+    for (int i = 0; i < np; i++) {
+        int p = primes[i], vmax = 0;
+        for (long q = p; q <= N; q *= p) vmax += N / q;   /* v_p(N!) */
+        int w = 0;
+        while ((1 << w) <= vmax) w++;                       /* vmax を表せるビット数 */
+        shift[i] = total;
+        total += w;
+    }
+    if (total > 64) { fprintf(stderr, "exponent vectors do not fit in 64 bits (%d bits)\n", total); return 1; }
     for (int m = 1; m <= N; m++) {
         u64 v = 0; int x = m;
         for (int i = 0; i < np; i++) {
             int e = 0;
             while (x % primes[i] == 0) { x /= primes[i]; e++; }
-            v += (u64)e << (6 * i);
+            v += (u64)e << shift[i];
         }
         vec[m] = v;
     }
@@ -118,9 +152,9 @@ int main(int argc, char **argv) {
     list = malloc(sizeof(u64) * (HS / 2));
     if (!tab || !used || !list) { fprintf(stderr, "out of memory\n"); return 1; }
 
-    /* 既存の b401472_01.txt があれば、1 から連続して書かれている行を読み込み、
+    /* 既存の b401272_01.txt があれば、1 から連続して書かれている行を読み込み、
        その続きから計算して追記する（途中で止めても再開できる） */
-    const char *fname = "b401472_01.txt";
+    const char *fname = "b401272_01.txt";
     int start = 1;                              /* 次に計算する n */
     gval[0] = 0;
     FILE *in = fopen(fname, "r");
