@@ -19,8 +19,11 @@
  *   - n が素数なら g(n) = g(n-1) + 1（n の成分は n 自身にしか現れない）。
  *   - 探索中、{2,...,x} から追加で選べる個数は高々 g(x)（計算済み）なので
  *     chosen + g(x) < target なら枝刈りする（以前は x - 1 で抑えていた）。
- *   - n/2 < x < n の素数 x は {2,...,n} の中で x 自身にしか現れない素因数をもつので、
- *     どの適格な集合に加えても適格なまま。よって必ず選び、選ばない枝は調べない。
+ *   - 「自由な素数」: 探索で x に来たとき、x が素数で、それまでに選んだ要素
+ *     （すべて x より大きい）に x の倍数がなければ、x の成分は最終的な集合で
+ *     x 自身にしか現れない。よって x は必ず選んでよく（選ばない枝は調べない）、
+ *     しかも以後の判定に影響しないので P に加えず個数だけ数える（P が倍増しない）。
+ *     n/2 < x < n の素数は常にこれに当たる。
  *   - ハッシュ表の大きさを n ごとに |P| の上限 2^target に合わせて決める
  *     （小さい表はキャッシュに乗るので速い）。空きは番兵値で表し、別配列を使わない。
  *
@@ -48,7 +51,9 @@ typedef uint64_t u64;
 static int primes[20], np;
 static u64 vec[MAXN + 1];
 static int target, found;
-static int forced[MAXN + 1];  /* forced[x] = 1: x は n/2 < x < n の素数（必ず選んでよい） */
+static int isprime_[MAXN + 1];   /* isprime_[x] = 1: x は素数 */
+static int pf[MAXN + 1][8], npf[MAXN + 1];  /* x の相異なる素因数 */
+static int cntp[MAXN + 1];       /* cntp[p] = 選んだ要素のうち p の倍数の個数 */
 static int gval[MAXN + 1];   /* 計算済みの g(m) */
 
 /* 部分和ベクトルの集合 P（線形探索法のハッシュ表）
@@ -118,17 +123,26 @@ static void dfs(int x, int chosen) {
     if (x < 2) return;
     /* {2,...,x} から追加で選べるのは、それ自身が条件を満たす集合なので高々 g(x) 個 */
     if (chosen + gval[x] < target) return;
-    long base = top;
-    if (forced[x]) {
-        /* n/2 < x < n の素数 x の成分は {2,...,n} の中で x 自身にしか現れないので、
-           どんな適格な集合に x を加えても適格なまま。よって x を選ばない枝は調べなくてよい
-           （x を選ばない解があれば、x を加えたものも解で、要素数は target 以上）。 */
-        if (!add(vec[x])) { fprintf(stderr, "internal error: forced prime %d rejected\n", x); exit(1); }
+    if (isprime_[x] && cntp[x] == 0) {
+        /* 「自由な素数」: x は素数で、これまでに選んだ要素（すべて x より大きい）に
+           x の倍数がない。これから選ぶ要素は x 未満なので x の倍数ではない。
+           よって x の成分は最終的な集合の中で x 自身にしか現れず、
+           (1) x を加えても適格性は崩れない → x を選ばない枝は調べなくてよい
+               （x を選ばない解があれば、x を加えたものも解で、要素数は target 以上）。
+           (2) 以後の判定にも影響しない: P は x 成分 0 の層と 1 の層に分かれ、
+               以後の要素は x 成分 0 なので、各層で同じ判定になる。
+               よって P に x を加えず、個数だけ数えればよい（P が倍増しない）。 */
         dfs(x - 1, chosen + 1);
-        undo(base);
         return;
     }
-    if (add(vec[x])) { dfs(x - 1, chosen + 1); undo(base); if (found) return; }
+    long base = top;
+    if (add(vec[x])) {
+        for (int i = 0; i < npf[x]; i++) cntp[pf[x][i]]++;
+        dfs(x - 1, chosen + 1);
+        for (int i = 0; i < npf[x]; i++) cntp[pf[x][i]]--;
+        undo(base);
+        if (found) return;
+    }
     dfs(x - 1, chosen);
 }
 
@@ -163,6 +177,17 @@ int main(int argc, char **argv) {
         }
         vec[m] = v;
     }
+    for (int m = 2; m <= N; m++) {
+        int x = m;
+        npf[m] = 0;
+        for (int i = 0; i < np; i++) {
+            if (x % primes[i] == 0) {
+                pf[m][npf[m]++] = primes[i];
+                while (x % primes[i] == 0) x /= primes[i];
+            }
+        }
+        isprime_[m] = (npf[m] == 1 && pf[m][0] == m);
+    }
 
     tab = malloc(sizeof(u64) << MAXHB);
     list = malloc(sizeof(u64) << (MAXHB - 2));
@@ -173,6 +198,7 @@ int main(int argc, char **argv) {
     const char *fname = "b401472_01.txt";
     int start = 1;                              /* 次に計算する n */
     gval[0] = 0;
+    int junk = 0;                               /* 採用しなかった行が残っているか */
     FILE *in = fopen(fname, "r");
     if (in) {
         char line[128];
@@ -180,18 +206,32 @@ int main(int argc, char **argv) {
         /* 改行で終わる完全な行だけを採用する（書き込み途中で止まった最終行は捨てる） */
         while (fgets(line, sizeof line, in)) {
             size_t len = strlen(line);
-            if (len == 0 || line[len - 1] != '\n') break;
-            if (sscanf(line, "%d %d", &a, &b) != 2 || a != start || a > N) break;
+            if (len == 0 || line[len - 1] != '\n' ||
+                sscanf(line, "%d %d", &a, &b) != 2 || a != start || a > MAXN) { junk = 1; break; }
             gval[a] = b;
             start++;
         }
         fclose(in);
     }
-    /* 読み込めた行だけを残してファイルを書き直し、以降は追記する */
-    FILE *f = fopen(fname, "w");
+    if (start > N) {
+        /* すでに N まで計算済み。ファイルには触らずに終わる（N を小さく指定しても行は消さない） */
+        printf("already computed up to n = %d\n", start - 1);
+        return 0;
+    }
+    FILE *f;
+    if (junk) {
+        /* 採用しなかった行（書きかけの行など）があるときだけ、正しい行を一時ファイルに
+           書いてから置き換える（置き換えの途中で止まっても元のファイルは残る） */
+        char tmpname[64];
+        snprintf(tmpname, sizeof tmpname, "%s.tmp", fname);
+        FILE *t = fopen(tmpname, "w");
+        if (!t) { perror(tmpname); return 1; }
+        for (int n = 1; n < start; n++) fprintf(t, "%d %d\n", n, gval[n]);
+        if (fclose(t) != 0 || rename(tmpname, fname) != 0) { perror("rewrite"); return 1; }
+    }
+    /* 以降は追記（既存の行は書き換えない） */
+    f = fopen(fname, "a");
     if (!f) { perror(fname); return 1; }
-    for (int n = 1; n < start; n++) fprintf(f, "%d %d\n", n, gval[n]);
-    fflush(f);
     if (start > 1) printf("resume from n = %d\n", start);
 
     if (start == 1) {                           /* g(1) = 0 */
@@ -229,14 +269,12 @@ int main(int argc, char **argv) {
         mask = (1u << hb) - 1;
         cap = 1L << (hb - 2);
         for (unsigned i = 0; i <= mask; i++) tab[i] = EMPTY;
-        for (int x = 2; x <= N; x++) forced[x] = 0;
-        for (int x = n / 2 + 1; x < n; x++) {   /* n/2 < x < n の素数 */
-            int ip = 1;
-            for (int q = 2; q * q <= x; q++) if (x % q == 0) { ip = 0; break; }
-            if (ip) forced[x] = 1;
-        }
+        for (int x = 0; x <= N; x++) cntp[x] = 0;
         top = 0; list[top++] = 0; ins(0);      /* P = {空集合の積} */
-        if (add(vec[n])) dfs(n - 1, 1);         /* n を必ず含める */
+        if (add(vec[n])) {                      /* n を必ず含める */
+            for (int i = 0; i < npf[n]; i++) cntp[pf[n][i]]++;
+            dfs(n - 1, 1);
+        }
         if (found) g++;
         gval[n] = g;
         fprintf(f, "%d %d\n", n, g);
