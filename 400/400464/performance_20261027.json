@@ -1,0 +1,69 @@
+{
+  "checked_on": "2026-10-27",
+  "prototype": {
+    "completed": 61,
+    "elapsed_seconds": 27.23634366599981,
+    "max_rss_bytes": 21331968,
+    "source_sha256": "4b00217c962ab8b8fe1895f4ca5a68711868b3b02a53f291c84f6be63f6454d3",
+    "source_description": "Independent dedicated DFS prototype with prefix and two-multiple-prime symmetry reductions; excludes checkpoint/b-file writes"
+  },
+  "selected_prototype_terms": [
+    {
+      "n": 50,
+      "value": 26,
+      "seconds": 0.552390374999959,
+      "nodes": 31157
+    },
+    {
+      "n": 51,
+      "value": 26,
+      "seconds": 3.0927004580007633,
+      "nodes": 175855
+    },
+    {
+      "n": 58,
+      "value": 29,
+      "seconds": 1.2747727919995668,
+      "nodes": 68046
+    },
+    {
+      "n": 59,
+      "value": 30,
+      "seconds": 0.000985249999757798,
+      "nodes": 22
+    },
+    {
+      "n": 60,
+      "value": 30,
+      "seconds": 7.889415208000173,
+      "nodes": 366580
+    },
+    {
+      "n": 61,
+      "value": 31,
+      "seconds": 0.0166110000000117,
+      "nodes": 808
+    }
+  ],
+  "legacy_checkpoint_comparison": {
+    "range": [
+      1,
+      51
+    ],
+    "values_agree": true,
+    "legacy_n51_seconds": 455.94238270795904
+  },
+  "tests": {
+    "count": 12,
+    "seconds": 0.986,
+    "small_oracle_through": 12,
+    "symmetry_oracle_through": 14,
+    "optional_z3_comparison_through": 30
+  },
+  "notes": [
+    "Existing checkpoint and b-file were not used as bounds for the fresh prototype run.",
+    "Legacy timings are saved user-run statistics, not a controlled A/B benchmark.",
+    "The integrated executable has been checked on short ranges; the 61-term prototype timing is not a guarantee for the integrated writer or other machines.",
+    "The integrated program has not been run to 61 against the user checkpoint."
+  ]
+}

@@ -2,7 +2,9 @@
 
 Maximum size of a subset of {1, ..., n} whose products of two distinct
 members are all distinct. Includes 1; only two-element subsets are compared.
-Dependency: z3-solver. No published values or b-files are used as bounds.
+The default dedicated solver uses the Python standard library only.
+Optional reference backend: --engine z3 (requires z3-solver).
+No published values or b-files are used as bounds.
 """
 
 import argparse
@@ -10,27 +12,26 @@ from collections import defaultdict
 from contextlib import ExitStack, contextmanager
 import fcntl
 from itertools import combinations
+from math import isqrt
 import json
 import os
 from pathlib import Path
-import shlex
 import sys
 from tempfile import NamedTemporaryFile
 import time
 
-try:
-    import z3
-except ImportError as error:
-    directory = Path(__file__).resolve().parent
-    local_python = directory/".venv/bin/python"
-    if local_python.exists():
-        hint = "Run with the local environment:\n"+shlex.join(
-            [str(local_python), "-B", str(Path(__file__).resolve()), *sys.argv[1:]])
-    else:
-        hint = ("From the script directory run:\n"
-                "python3 -m venv .venv\n"
-                ".venv/bin/python -m pip install -r requirements.txt")
-    raise SystemExit("z3-solver is not available to this Python.\n"+hint) from error
+# Load the optional reference engine only when it is explicitly requested.
+z3 = None
+
+
+def require_z3():
+    global z3
+    if z3 is None:
+        try:
+            import z3 as module
+        except ImportError as error:
+            raise ValueError("The optional --engine z3 needs z3-solver; use --engine dfs or install requirements.txt") from error
+        z3 = module
 
 
 class IncompleteCheck(RuntimeError):
@@ -90,8 +91,10 @@ def collision_edges(limit):
     return by_maximum
 
 
-class UpperModel:
+class Z3UpperModel:
     def __init__(self, limit, timeout_ms):
+        require_z3()
+        self.last_statistics = {"engine": "z3"}
         self.variables = {a: z3.Bool(f"select_{a}") for a in range(1, limit+1)}
         self.edges = collision_edges(limit)
         self.solver = z3.Solver()
@@ -104,6 +107,11 @@ class UpperModel:
         for edge in self.edges[n]:
             self.solver.add(z3.Or([z3.Not(self.variables[a]) for a in edge]))
         self.active = n
+
+    def prove(self, n, value):
+        # Keep this backend independent of the dedicated solver's prefix cuts.
+        if n != self.active:
+            raise ValueError("Wrong active prefix")
 
     def probe(self, n, target):
         """Return a valid set of size at least target, or None for UNSAT."""
@@ -126,6 +134,172 @@ class UpperModel:
                     if z3.is_true(model.eval(self.variables[a], model_completion=True))]
         finally:
             self.solver.pop()
+
+
+class SidonSearch:
+    """Exact search for an increase, using a dynamically strengthened graph.
+
+    Code is independently written from the collision definition. A graph edge
+    means two remaining integers are compatible with the already selected set;
+    it is only an upper-bound graph, not a replacement for the four-set rule.
+    """
+
+    def __init__(self, n, values, edges, timeout_ms):
+        self.n = n
+        self.values = values
+        self.deadline = time.monotonic()+timeout_ms/1000 if timeout_ms else float("inf")
+        self.nodes = 0
+        self.color_prunes = 0
+        self.prefix_prunes = 0
+        self.next_progress = time.monotonic()+5
+        self.edges = edges
+        self.pairs = [[[] for _ in range(n)] for _ in range(n)]
+        used = 0
+        for edge in edges:
+            for vertex in edge:
+                used |= 1 << vertex
+            for a, b in combinations(edge, 2):
+                c, d = [vertex for vertex in edge if vertex not in (a, b)]
+                self.pairs[a][b].append((c, d))
+                self.pairs[b][a].append((c, d))
+        self.full = (1 << n)-1
+        self.free = self.full ^ used
+        # A prime with exactly two multiples in [1,n] occurs only as p or 2p.
+        # There is an optimal set containing every such p, and at most one 2p.
+        # Keep the family containing n distinguished when n itself is 2p.
+        primes2 = [p for p in range(2, n+1) if n//p == 2 and
+                   all(p % d for d in range(2, isqrt(p)+1))]
+        representative = (n//2 if n % 2 == 0 and n//2 in primes2 else
+                          primes2[0] if primes2 else None)
+        self.forced = sum(1 << (p-1) for p in primes2)
+        self.forbidden = sum(1 << (2*p-1) for p in primes2 if p != representative)
+        # Larger m has nondecreasing deficiency m-F(m).
+        self.caps = [((1 << m)-1, values[m], m-values[m])
+                     for m in range(len(values)-1, 0, -1) if values[m] < m]
+
+    def solve(self, target):
+        # Any increase over F(n-1) must use n. Free vertices never cause a clash.
+        selected = self.free | self.forced | (1 << (self.n-1))
+        candidates = self.full & ~(selected | self.forbidden)
+        adjacency = [self.full ^ (1 << vertex) for vertex in range(self.n)]
+        for edge in self.edges:
+            remaining = [v for v in edge if not selected >> v & 1]
+            if not remaining:
+                return None
+            if len(remaining) == 1:
+                candidates &= ~(1 << remaining[0])
+            elif len(remaining) == 2:
+                a, b = remaining
+                adjacency[a] &= ~(1 << b)
+                adjacency[b] &= ~(1 << a)
+        return self.expand(selected, candidates, adjacency, target-selected.bit_count())
+
+    @staticmethod
+    def color_order(candidates, adjacency):
+        """A proper coloring bounds every prefix of the resulting order."""
+        order, bounds = [], []
+        color, remaining = 0, candidates
+        while remaining:
+            color += 1
+            available = remaining
+            while available:
+                bit = available & -available
+                vertex = bit.bit_length()-1
+                order.append(vertex)
+                bounds.append(color)
+                remaining ^= bit
+                available ^= bit
+                available &= ~adjacency[vertex]
+        return order, bounds
+
+    def expand(self, selected, candidates, adjacency, need):
+        self.nodes += 1
+        if self.nodes == 1 or not self.nodes & 255:
+            now = time.monotonic()
+            if now > self.deadline:
+                raise IncompleteCheck("search timeout")
+            if now >= self.next_progress:
+                print(f"n={self.n}, nodes={self.nodes}", file=sys.stderr, flush=True)
+                self.next_progress = now+5
+        if need <= 0:
+            return selected
+        if candidates.bit_count() < need:
+            return None
+        universe = selected | candidates
+        budget = universe.bit_count()-(selected.bit_count()+need)
+        for mask, value, deficiency in self.caps:
+            if deficiency <= budget:
+                break
+            if (universe & mask).bit_count()-value > budget:
+                self.prefix_prunes += 1
+                return None
+        maximum = candidates.bit_length()
+        if maximum < len(self.values) and self.values[maximum] < need:
+            self.prefix_prunes += 1
+            return None
+        order, bounds = self.color_order(candidates, adjacency)
+        for index in range(len(order)-1, -1, -1):
+            if bounds[index] < need:
+                self.color_prunes += 1
+                return None
+            vertex = order[index]
+            bit = 1 << vertex
+            candidates &= ~bit
+            next_candidates = candidates & adjacency[vertex]
+            if next_candidates.bit_count() < need-1:
+                continue
+            new_adjacency = adjacency.copy()
+            remaining = selected
+            while remaining:
+                low = remaining & -remaining
+                other = low.bit_length()-1
+                remaining ^= low
+                for a, b in self.pairs[vertex][other]:
+                    if next_candidates >> a & 1 and next_candidates >> b & 1:
+                        new_adjacency[a] &= ~(1 << b)
+                        new_adjacency[b] &= ~(1 << a)
+            result = self.expand(selected | bit, next_candidates, new_adjacency, need-1)
+            if result is not None:
+                return result
+        return None
+
+
+class UpperModel:
+    """Dedicated exact solver; bounds come only from re-proved earlier terms."""
+
+    def __init__(self, limit, timeout_ms):
+        self.limit = limit
+        self.timeout_ms = timeout_ms
+        self.edges = collision_edges(limit)
+        self.current_edges = []
+        self.active = 0
+        self.values = [0]
+        self.last_statistics = {}
+
+    def advance(self, n):
+        if n != self.active+1:
+            raise ValueError("Prefixes must be activated consecutively")
+        self.current_edges.extend(tuple(v-1 for v in edge) for edge in self.edges[n])
+        self.active = n
+
+    def prove(self, n, value):
+        if n != self.active or len(self.values) != n or value-self.values[-1] not in (0, 1):
+            raise ValueError("Invalid order of proved bounds")
+        self.values.append(value)
+
+    def probe(self, n, target):
+        if n != self.active or len(self.values) != n or target != self.values[-1]+1:
+            raise ValueError("The dedicated search requires the next possible maximum")
+        search = SidonSearch(n, self.values, self.current_edges, self.timeout_ms)
+        try:
+            result = search.solve(target)
+        finally:
+            self.last_statistics = {"engine": "dfs", "nodes": search.nodes,
+                                    "color_prunes": search.color_prunes,
+                                    "prefix_prunes": search.prefix_prunes}
+        if result is None:
+            return None
+        return [i+1 for i in range(n) if result >> i & 1]
 
 
 def validate_witness(n, value, witness):
@@ -174,12 +348,14 @@ def verify_state(state, model):
         # On a plateau, explicitly exclude a set with one more member.
         if value == previous and model.probe(n, value+1) is not None:
             raise ValueError(f"Saved value is not maximal at n={n}")
+        model.prove(n, value)
         previous = value
 
 
-def compute(limit, checkpoint, output, bfile, timeout_ms=0, verify_only=False):
+def compute(limit, checkpoint, output, bfile, timeout_ms=0, verify_only=False, engine="dfs"):
     state = load_state(checkpoint)
-    model = UpperModel(max(limit, state["limit_completed"]), timeout_ms)
+    factory = UpperModel if engine == "dfs" else Z3UpperModel
+    model = factory(max(limit, state["limit_completed"]), timeout_ms)
     print(f"Checking saved n=1..{state['limit_completed']}...", file=sys.stderr, flush=True)
     verify_state(state, model)
     print("Saved completed range verified.", file=sys.stderr, flush=True)
@@ -197,7 +373,9 @@ def compute(limit, checkpoint, output, bfile, timeout_ms=0, verify_only=False):
 
     def save():
         state["search_seconds"] = prior_seconds+time.monotonic()-started
-        state["z3_version"] = z3.get_version_string()
+        state["engine"] = engine
+        if engine == "z3":
+            state["z3_version"] = z3.get_version_string()
         atomic_write(checkpoint, json.dumps(state, indent=2)+"\n")
         write_bfile()
 
@@ -222,7 +400,9 @@ def compute(limit, checkpoint, output, bfile, timeout_ms=0, verify_only=False):
                      "witnesses": state["witnesses"]+[witness],
                      "statistics": state["statistics"]+[
                          {"n": n, "test_at_previous_plus_one": status,
-                          "seconds": time.monotonic()-term_started}]}
+                          "seconds": time.monotonic()-term_started,
+                          **model.last_statistics}]}
+            model.prove(n, value)
             save()
             print(f"n={n}: {value} (optimal)", file=sys.stderr, flush=True)
     except (KeyboardInterrupt, IncompleteCheck):
@@ -260,6 +440,7 @@ def main(argv=None):
     parser.add_argument("--bfile", type=Path, default=directory/"b400464.txt")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--timeout-ms", type=int, default=0, help="per query; 0 means no timeout")
+    parser.add_argument("--engine", choices=("dfs", "z3"), default="dfs", help="dedicated standard-library search (default), or optional Z3 reference")
     parser.add_argument("--verify-only", action="store_true", help="check saved terms without updating results")
     args = parser.parse_args(argv)
     if not 1 <= args.N <= 100 or args.timeout_ms < 0:
@@ -270,7 +451,7 @@ def main(argv=None):
         lock_paths = [checkpoint] if args.verify_only else [checkpoint, bfile, output]
         with output_locks(lock_paths):
             compute(args.N, checkpoint, output, bfile,
-                    args.timeout_ms, args.verify_only)
+                    args.timeout_ms, args.verify_only, args.engine)
     except KeyboardInterrupt:
         return 130
     except IncompleteCheck as error:

@@ -1,3 +1,5 @@
 *.lock
 .*.tmp
 __pycache__/
+.venv/
+/400464_01
