@@ -96,6 +96,48 @@ class GeneratorChecks(unittest.TestCase):
                 self.assertFalse(self.output.exists())
                 self.assertEqual(self.compute(8),[1,2,3,4,5,5,6,6])
 
+    def test_missing_checkpoint_preserves_nonempty_bfile(self):
+        self.bfile.write_text('1 1\n2 2\n3 3\n')
+        self.output.write_text('existing one-line output\n')
+        before={path:path.read_bytes() for path in (self.bfile,self.output)}
+        for verify_only in (False,True):
+            with self.assertRaisesRegex(ValueError,'nonempty b-file'):
+                self.compute(3,verify_only=verify_only)
+            self.assertFalse(self.checkpoint.exists())
+            self.assertEqual(before,{path:path.read_bytes() for path in before})
+
+    def test_empty_checkpoint_preserves_nonempty_bfile(self):
+        state=program.load_state(self.checkpoint)
+        self.checkpoint.write_text(json.dumps(state))
+        self.bfile.write_text('1 1\n2 2\n3 3\n')
+        before={path:path.read_bytes() for path in (self.checkpoint,self.bfile)}
+        with self.assertRaisesRegex(ValueError,'nonempty b-file'):
+            self.compute(3)
+        self.assertEqual(before,{path:path.read_bytes() for path in before})
+        self.assertFalse(self.output.exists())
+
+    def test_empty_bfile_allows_first_term_timeout_and_restart(self):
+        self.bfile.write_text('')
+        with patch.object(program.UpperModel,'probe',side_effect=program.IncompleteCheck('simulated')):
+            with self.assertRaises(program.IncompleteCheck):
+                self.compute(3)
+        self.assertEqual(json.loads(self.checkpoint.read_text())['limit_completed'],0)
+        self.assertEqual(self.bfile.read_text(),'')
+        self.assertEqual(self.compute(3),[1,2,3])
+
+    def test_cli_missing_checkpoint_preserves_bfile_and_output(self):
+        self.bfile.write_text('1 1\n2 2\n3 3\n')
+        self.output.write_text('existing output\n')
+        before={path:path.read_bytes() for path in (self.bfile,self.output)}
+        result=subprocess.run([sys.executable,'-S','-B',program.__file__,'3',
+                               '--checkpoint',str(self.checkpoint),'--bfile',str(self.bfile),
+                               '--output',str(self.output)],capture_output=True,text=True)
+        self.assertEqual(result.returncode,1)
+        self.assertIn('nonempty b-file',result.stderr)
+        self.assertEqual(result.stdout,'')
+        self.assertFalse(self.checkpoint.exists())
+        self.assertEqual(before,{path:path.read_bytes() for path in before})
+
     def test_failed_bfile_write_recovers_from_checkpoint(self):
         original = program.atomic_write
         def fail_at_six(path,text):

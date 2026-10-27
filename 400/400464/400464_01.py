@@ -354,6 +354,12 @@ def verify_state(state, model):
 
 def compute(limit, checkpoint, output, bfile, timeout_ms=0, verify_only=False, engine="dfs"):
     state = load_state(checkpoint)
+    # A b-file alone is not a verified checkpoint. Preserve it rather than
+    # replacing it with an empty prefix after a move or checkpoint loss.
+    if state["limit_completed"] == 0 and bfile.exists() and bfile.stat().st_size > 0:
+        raise ValueError("No proved checkpoint is available, but a nonempty b-file exists. "
+                         "Restore its checkpoint or choose new --checkpoint, --bfile and "
+                         "--output paths. The existing b-file was not changed.")
     factory = UpperModel if engine == "dfs" else Z3UpperModel
     model = factory(max(limit, state["limit_completed"]), timeout_ms)
     print(f"Checking saved n=1..{state['limit_completed']}...", file=sys.stderr, flush=True)
