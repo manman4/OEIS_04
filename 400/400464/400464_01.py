@@ -13,6 +13,7 @@ from itertools import combinations
 import json
 import os
 from pathlib import Path
+import shlex
 import sys
 from tempfile import NamedTemporaryFile
 import time
@@ -20,7 +21,16 @@ import time
 try:
     import z3
 except ImportError as error:
-    raise SystemExit("z3-solver is required; install requirements.txt") from error
+    directory = Path(__file__).resolve().parent
+    local_python = directory/".venv/bin/python"
+    if local_python.exists():
+        hint = "Run with the local environment:\n"+shlex.join(
+            [str(local_python), "-B", str(Path(__file__).resolve()), *sys.argv[1:]])
+    else:
+        hint = ("From the script directory run:\n"
+                "python3 -m venv .venv\n"
+                ".venv/bin/python -m pip install -r requirements.txt")
+    raise SystemExit("z3-solver is not available to this Python.\n"+hint) from error
 
 
 class IncompleteCheck(RuntimeError):
