@@ -239,6 +239,24 @@ static int save_prefix(int count) {
         error = errno; unlink(temporary); errno = error;
         perror("replace result; previous file unchanged"); return 0;
     }
+    /* The new file is already in place. Sync its directory entry before
+       reporting success; on failure keep the valid result for a later run. */
+    int directory_fd = open(".", O_RDONLY | O_DIRECTORY);
+    if (directory_fd < 0) {
+        perror("result replaced; cannot open output directory for synchronization");
+        return 0;
+    }
+    int sync_result;
+    do {
+        sync_result = fsync(directory_fd);
+    } while (sync_result != 0 && errno == EINTR);
+    error = sync_result != 0 ? (errno ? errno : EIO) : 0;
+    if (close(directory_fd) != 0 && !error) error = errno ? errno : EIO;
+    if (error) {
+        errno = error;
+        perror("result replaced; directory synchronization not confirmed");
+        return 0;
+    }
     return 1;
 }
 
