@@ -6,3 +6,4 @@ for(n=1, 15, print1(a(n) % 4, ", "));
 
 a_vector(n) = my(v=vector(n+1)); v[1]=1; for(i=1, n, v[i+1]=sum(j=1, i, 2^(j-1)*binomial(3*i+j, j)*v[i-j+1])); v;
 a_vector(17)
+
