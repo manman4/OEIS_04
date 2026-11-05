@@ -79,8 +79,8 @@ def save_new(path, terms):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('n', type=int, nargs='?', default=185)
-    parser.add_argument('--max-shift', type=int, default=1_000_000_000)
+    parser.add_argument('n', type=int, nargs='?', default=200)
+    parser.add_argument('--max-shift', type=int, default=4_000_000_000)
     parser.add_argument('--output', type=Path, default=Path(__file__).with_name('b401757.txt'))
     args = parser.parse_args()
     if args.n < 1 or args.max_shift < 1:
