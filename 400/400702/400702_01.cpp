@@ -102,23 +102,28 @@ bool done_flag;
 
 // 新要素どうしの和（自分自身を含む）の個数の上限: 2x+2+i+j <= N を満たす 0 <= i <= j < r の組
 long new_pair_bound(int x, int r) {
-    long c = 0;
-    for (int j = 0; j < r; j++)
-        for (int i = 0; i <= j; i++)
-            if (2 * x + 2 + i + j <= curN) c++;
-    return c;
+    int t = curN - 2 * x - 2;
+    if (t < 0) return 0;
+    long total = static_cast<long>(r) * (r + 1) / 2;
+    if (t >= 2 * r - 2) return total;
+    // t < r なら、i+j <= t の組数は floor((t+2)^2/4)。
+    if (t < r) {
+        long width = t + 2;
+        return width * width / 4;
+    }
+    // (i,j) を (r-1-j,r-1-i) に反転して、条件を満たさない組を数える。
+    long width = 2 * r - 1 - t;
+    return total - width * width / 4;
 }
 
-// 事実 (6)(c): elems[0..k-1] を選び、残り r 個が y_j >= x+1+j のとき、新しい和の個数の上限
+// 事実 (6)(c)。既存要素 a ごとの候補数は max(0,min(r,N-a-x))。
+// 既存要素との組を O(k)、新要素どうしの組を O(1) で数える。
 long pos_bound(int k, int x, int r) {
-    long total = 0;
-    for (int j = 0; j < r; j++) {
-        int ymin = x + 1 + j;
-        int c = 0;
-        for (int i = 0; i < k && elems[i] + ymin <= curN; i++) c++;   // elems は昇順
-        for (int i = 0; i < j; i++) if (2 * x + 2 + i + j <= curN) c++;
-        if (2 * ymin <= curN) c++;
-        total += c;
+    long total = new_pair_bound(x, r);
+    for (int i = 0; i < k; i++) {
+        int count = curN - elems[i] - x;
+        if (count <= 0) break;           // elems は昇順
+        total += count < r ? count : r;
     }
     return total;
 }
