@@ -17,6 +17,7 @@
    Support is 1..255; exhaustive search may be expensive near perfect squares. */
 /* At most 15 elements and 120 pairs. Candidate sums are at most 510,
    and only sums at most n index the seen array. */
+   
 enum { MAX_N = 255, MAX_SIZE = 15 };
 static const char output[] = "b400702_02.txt";
 
