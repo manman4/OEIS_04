@@ -86,8 +86,9 @@ static void order_vertices(int n, const uint32_t adj[], int order[],
     }
 }
 
-/* At a leaf, budget is target minus the cut size. Every target-size cut
-   rules out each candidate edge crossing it. A larger cut rules out all. */
+/* At a leaf, budget is the cut size minus target.
+   Every target-size cut rules out each candidate edge crossing it.
+   A larger cut rules out all. */
 static void filter_extensions(int n, const int order[], const uint32_t previous[],
                               int i, uint32_t side, int budget,
                               uint32_t allowed[], uint32_t *active) {
