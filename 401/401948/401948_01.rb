@@ -87,7 +87,7 @@ N = if ARGV.empty?
       abort "usage: ruby 400000_01.rb [N]   (1 <= N <= 20000)"
     end
 
-FNAME = "b400000.txt"
+FNAME = "b401948.txt"
 CHECK_ENUM_N = 20
 CHECK_DP_N = 300
 
