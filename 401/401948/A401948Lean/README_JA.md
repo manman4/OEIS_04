@@ -21,8 +21,11 @@ L=\sum_{i=1}^r\max(0,s_i+i-r)\le n.
 A401947 の $`T(n,k)`$ は、この分類を集合の要素数 $`k`$ ごとに数えたもの。$`k\ge3`$ の列は、サイズ2と、それ以外の $`r=k-1`$ 種類を持つ集合を数える `countByLength n (k-1)` に対応する。$`k=0,1,2`$ は `smallProfiles` の場合分けに対応する。各列を足すと A401948 の $`F(n)`$ になり、Lean の `F_eq_countByLength` は小さい場合の合計と `countByLength` の和としてこの計数を証明している。[A401947](https://oeis.org/A401947)・[A401948](https://oeis.org/A401948)・[計数方法の証明](../401948_count_profiles_proof.md)
 
 ```math
-F(n)=\sum_{k=0}^{K(n)} T(n,k),\quad K(n)=\lfloor\sqrt{4n+3}
-floor-2.
+F(n)=\sum_{k=0}^{K(n)} T(n,k).
+```
+
+```math
+K(n)=\lfloor\sqrt{4n+3}\rfloor-2.
 ```
 
 ### 行和から整数分割 DP へ
