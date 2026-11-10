@@ -1,7 +1,11 @@
-"""Count line-size sets of planar point configurations."""
+"""Count line-size sets of planar point configurations and save a b-file."""
 
+import argparse
+import fcntl
 from itertools import count
-import sys
+import os
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 
 def profile_counts(limit):
@@ -40,10 +44,64 @@ def profile_counts(limit):
     return result
 
 
+def save_bfile(path, values):
+    """Atomically save the results, preserving any longer matching file."""
+    # The directory is a stable lock target even when the output is replaced.
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(directory, fcntl.LOCK_EX)
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise ValueError(f"{path.name} must be a regular file")
+
+        saved = 0
+        if path.exists():
+            with path.open(encoding="ascii") as existing:
+                for saved, line in enumerate(existing, 1):
+                    if saved > len(values):
+                        return False
+                    if line.split() != [str(saved), str(values[saved - 1])]:
+                        raise ValueError(f"{path.name} differs at line {saved}")
+        if saved == len(values):
+            return False
+
+        temporary = None
+        try:
+            with NamedTemporaryFile(
+                mode="w", encoding="ascii", newline="\n", dir=path.parent,
+                prefix=f".{path.stem}-", suffix=".txt", delete=False,
+            ) as stream:
+                temporary = Path(stream.name)
+                for index, value in enumerate(values, 1):
+                    stream.write(f"{index} {value}\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        return True
+    finally:
+        os.close(directory)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("n", nargs="?", type=int, default=100, help="last index (default: 100)")
+    args = parser.parse_args()
+    if args.n < 1:
+        parser.error("n must be positive")
+
+    path = Path(__file__).resolve().with_name("b401948_01.txt")
+    values = profile_counts(args.n)
+    try:
+        written = save_bfile(path, values)
+    except (OSError, ValueError) as error:
+        parser.exit(1, f"Error: {error}\n")
+    if written:
+        print(f"Saved n=1..{args.n} to {path.name}")
+    else:
+        print(f"Kept existing {path.name} (already covers n=1..{args.n})")
+
+
 if __name__ == "__main__":
-    if len(sys.argv) > 2:
-        raise SystemExit("Usage: count-profiles.py [positive limit]")
-    limit = int(sys.argv[1]) if len(sys.argv) == 2 else 100
-    if limit < 1:
-        raise SystemExit("The limit must be positive.")
-    print(", ".join(map(str, profile_counts(limit))))
+    main()
