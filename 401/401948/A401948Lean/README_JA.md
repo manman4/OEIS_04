@@ -2,7 +2,7 @@
 
 [English README](README.md)
 
-実平面上の相異なる $`n`$ 点で実現できる直線サイズ集合の総数 $`F(n)`$ を、実行可能な参照用の漸化式で求められることを証明する。
+実平面上の相異なる $`n`$ 点で実現できる直線サイズ集合の総数 $`F(n)`$ を、参照用の漸化式と整数分割 DP のどちらでも求められることを証明する。
 
 $`3\le s_1\lt\cdots\lt s_r`$、$`r\ge2`$ のとき、`Erdos607.realizable_iff` は、直線サイズ集合 $`\{2,s_1,\ldots,s_r\}`$ をちょうど $`n`$ 点で実現できることと、次の条件が同値であることを証明する。
 
@@ -10,7 +10,7 @@ $`3\le s_1\lt\cdots\lt s_r`$、$`r\ge2`$ のとき、`Erdos607.realizable_iff` �
 \sum_{i=1}^r\max(0,s_i+i-r)\le n.
 ```
 
-全点が共線の場合や3以上のサイズが高々1種類の場合も分類する。`Erdos607.certifiedCount_eq_F` は、その分類と DP の漸化式をつなぎ、すべての正の $`n`$ で参照用の計算結果が $`F(n)`$ と一致することを示す。Python 版は同じ候補を整数分割の漸化式で数える。その導出は[計数方法の証明](../401948_count_profiles_proof.md)に記す。
+全点が共線の場合や3以上のサイズが高々1種類の場合も分類する。`Erdos607.certifiedCount_eq_F` は、その分類と DP の漸化式をつなぎ、すべての正の $`n`$ で参照用の計算結果が $`F(n)`$ と一致することを示す。`Erdos607.partitionHistogramCount_eq_F` は、計算上限を $`N`$ とすると整数分割 DP が $`1\le n\le N`$ の各 $`n`$ で $`F(n)`$ を返すことを証明する。Lean のモデルは [Python 版](../401948_01.py)と同じ昇順の配列更新と打ち切りを使い、最小点数別の重み付き集計とその累積和を検証する。形式保証の範囲は計数処理で、ファイル出力や Python の実行系は対象外。
 
 ## ファイル
 
@@ -19,7 +19,11 @@ $`3\le s_1\lt\cdots\lt s_r`$、$`r\ge2`$ のとき、`Erdos607.realizable_iff` �
 - [OrdinaryLine.lean](A401948Lean/OrdinaryLine.lean) は分類に使う Sylvester–Gallai の定理の証明。
 - [Classification.lean](A401948Lean/Classification.lean) は実現できる集合の全分類と、サイズ数別の計数式の証明。
 - [CountingDP.lean](A401948Lean/CountingDP.lean) は DP の各セルが数える候補の証明。
-- [Verification.lean](A401948Lean/Verification.lean) は参照用 DP と $`F(n)`$ の一致および参照用の長さ打ち切り条件の証明。
+- [Verification.lean](A401948Lean/Verification.lean) は DP と $`F(n)`$ の一致および 参照版の長さ打ち切り条件の証明。
+- [PartitionDP.lean](A401948Lean/PartitionDP.lean) は分割表の昇順更新と打ち切りの証明。
+- [PartitionCount.lean](A401948Lean/PartitionCount.lean) は漸化式とゼロで埋めた整数分割の個数の一致の証明。
+- [ProfileSplit.lean](A401948Lean/ProfileSplit.lean) と [ProfileEncoding.lean](A401948Lean/ProfileEncoding.lean) は整数分割と直線サイズ列との全単射の証明。
+- [FastVerification.lean](A401948Lean/FastVerification.lean) は点数に寄与しない末尾の選択肢を数え、累積集計と $`F(n)`$ をつなぐ証明。
 - [AxiomAudit.lean](A401948Lean/AxiomAudit.lean) は主要定理の公理監査。
 
 ## 検証

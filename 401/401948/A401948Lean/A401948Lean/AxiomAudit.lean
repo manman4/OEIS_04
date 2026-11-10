@@ -8,3 +8,8 @@ import A401948Lean
 #print axioms Erdos607.dpAtLength_eq_count
 #print axioms Erdos607.dpAtLength_zero_after_cutoff
 #print axioms Erdos607.certifiedCount_eq_F
+#print axioms Erdos607.partitionTable_correct
+#print axioms Erdos607.partitionCount_eq_ncard
+#print axioms Erdos607.decodeProfile_inj
+#print axioms Erdos607.decodeProfile_surj
+#print axioms Erdos607.partitionHistogramCount_eq_F
