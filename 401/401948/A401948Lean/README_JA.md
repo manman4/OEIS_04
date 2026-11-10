@@ -10,7 +10,7 @@ $`3\le s_1\lt\cdots\lt s_r`$、$`r\ge2`$ のとき、`Erdos607.realizable_iff` �
 \sum_{i=1}^r\max(0,s_i+i-r)\le n.
 ```
 
-全点が共線の場合や3以上のサイズが高々1種類の場合も分類する。`Erdos607.certifiedCount_eq_F` は、その分類と DP の漸化式をつなぎ、すべての正の $`n`$ で参照用の計算結果が $`F(n)`$ と一致することを示す。既存の Python 版は累積和と2枚の表で漸化式を計算する。そのループとの対応は[計数方法の証明](../401948_count_profiles_proof.md)に別に記す。
+全点が共線の場合や3以上のサイズが高々1種類の場合も分類する。`Erdos607.certifiedCount_eq_F` は、その分類と DP の漸化式をつなぎ、すべての正の $`n`$ で参照用の計算結果が $`F(n)`$ と一致することを示す。Python 版は同じ候補を整数分割の漸化式で数える。その導出は[計数方法の証明](../401948_count_profiles_proof.md)に記す。
 
 ## ファイル
 
@@ -19,7 +19,7 @@ $`3\le s_1\lt\cdots\lt s_r`$、$`r\ge2`$ のとき、`Erdos607.realizable_iff` �
 - [OrdinaryLine.lean](A401948Lean/OrdinaryLine.lean) は分類に使う Sylvester–Gallai の定理の証明。
 - [Classification.lean](A401948Lean/Classification.lean) は実現できる集合の全分類と、サイズ数別の計数式の証明。
 - [CountingDP.lean](A401948Lean/CountingDP.lean) は DP の各セルが数える候補の証明。
-- [Verification.lean](A401948Lean/Verification.lean) は DP と $`F(n)`$ の一致および Python 版の長さ打ち切り条件の証明。
+- [Verification.lean](A401948Lean/Verification.lean) は参照用 DP と $`F(n)`$ の一致および参照用の長さ打ち切り条件の証明。
 - [AxiomAudit.lean](A401948Lean/AxiomAudit.lean) は主要定理の公理監査。
 
 ## 検証

@@ -10,7 +10,7 @@ For $`3\le s_1\lt\cdots\lt s_r`$ and $`r\ge2`$, `Erdos607.realizable_iff` says t
 \sum_{i=1}^r\max(0,s_i+i-r)\le n.
 ```
 
-The classification also covers collinear configurations and the cases with at most one size greater than two. The proof of `Erdos607.certifiedCount_eq_F` connects that classification to the recurrence for increasing prefixes. The existing Python implementation evaluates the recurrence with a rolling sum and two tables. Its loop invariants are checked separately in the [mathematical proof](../401948_count_profiles_proof.md).
+The classification also covers collinear configurations and the cases with at most one size greater than two. The proof of `Erdos607.certifiedCount_eq_F` connects that classification to the reference recurrence for increasing prefixes. The Python implementation counts the same profiles with an integer-partition recurrence, whose derivation is given in the [mathematical proof](../401948_count_profiles_proof.md).
 
 ## Files
 
@@ -19,7 +19,7 @@ The classification also covers collinear configurations and the cases with at mo
 - [OrdinaryLine.lean](A401948Lean/OrdinaryLine.lean) proves the Sylvester–Gallai theorem used in the classification.
 - [Classification.lean](A401948Lean/Classification.lean) classifies all profiles and derives the count by length.
 - [CountingDP.lean](A401948Lean/CountingDP.lean) proves what each DP cell counts.
-- [Verification.lean](A401948Lean/Verification.lean) connects the recurrence to $`F(n)`$ and proves the length cutoff used in Python.
+- [Verification.lean](A401948Lean/Verification.lean) connects the reference recurrence to $`F(n)`$ and proves its length cutoff.
 - [AxiomAudit.lean](A401948Lean/AxiomAudit.lean) checks the axioms used by these results.
 
 ## Verification

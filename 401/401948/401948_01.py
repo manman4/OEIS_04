@@ -2,7 +2,7 @@
 
 import argparse
 import fcntl
-from itertools import count
+from math import isqrt
 import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -11,29 +11,25 @@ from tempfile import NamedTemporaryFile
 def profile_counts(limit):
     """Return the counts for point-set sizes 1 through limit."""
     first_possible = [0] * (limit + 1)
+    partitions = [1] + [0] * limit
 
-    # At least two distinct line sizes of at least 3.
-    for length in count(2):
-        if sum(max(0, 2*i + 2 - length) for i in range(1, length + 1)) > limit:
-            break
+    # m counts the positive contributions to the minimum point count.
+    for m in range(1, isqrt(limit) + 1):
+        base = m * m
+        # Count partitions of the excess into parts at most m.
+        for excess in range(m, limit - base + 1):
+            partitions[excess] += partitions[excess - m]
+        if m == 1:
+            continue
 
-        # ending[size][cost] counts prefixes with the indicated last size.
-        ending = [[0] * (limit + 1) for _ in range(limit + 1)]
-        ending[2][0] = 1
-        for i in range(1, length + 1):
-            next_ending = [[0] * (limit + 1) for _ in range(limit + 1)]
-            smaller = [0] * (limit + 1)
-            for size in range(3, limit + 1):
-                for cost, number in enumerate(ending[size - 1]):
-                    smaller[cost] += number
-                extra = max(0, size + i - length)
-                for cost in range(limit + 1 - extra):
-                    next_ending[size][cost + extra] = smaller[cost]
-            ending = next_ending
-
-        for row in ending:
-            for cost, number in enumerate(row):
-                first_possible[cost] += number
+        weight = 1 << max(0, m - 3)
+        if m >= 3:
+            for cost in range(base, limit + 1):
+                first_possible[cost] += weight * partitions[cost - base]
+        # Raising all m entries by one gives the additional completions.
+        shifted = base + m
+        for cost in range(shifted, limit + 1):
+            first_possible[cost] += weight * partitions[cost - shifted]
 
     total = 0
     result = []
