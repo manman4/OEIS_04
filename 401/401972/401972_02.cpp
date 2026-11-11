@@ -52,8 +52,8 @@
  *
  * 検証: m <= 16 を、geng の出力をすべて最大カットの総当たりにかける別のスクリプトと照合した。
  *
- * コンパイル: g++ -O2 -std=c++17 -Wall -Wextra -Wpedantic -Werror erdos581_02.cpp -o erdos581_02
- * 実行:       ./erdos581_01 [M]   （M の既定値 20、上限 MAXM）
+ * コンパイル: g++ -O2 -std=c++17 -Wall -Wextra -Wpedantic -Werror -pthread 401972_02.cpp -o 401972_02
+ * 実行:       ./401972_02 [M [J]]   （M は 1..40、既定値 20。J は 1..64、既定値 1）
  */
 #include <atomic>
 #include <cerrno>
@@ -158,14 +158,14 @@ int maxcut_below(const Graph &g, int threshold) {
     return best;
 }
 
-bool parse_limit(const char *text, int *value) {
+bool parse_limit(const char *text, int maximum, int *value) {
     if (!*text) return false;
     for (const char *p = text; *p; p++)
         if (*p < '0' || *p > '9') return false;
     errno = 0;
     char *end;
     long parsed = std::strtol(text, &end, 10);
-    if (errno == ERANGE || *end || parsed < 1 || parsed > MAXM) return false;
+    if (errno == ERANGE || *end || parsed < 1 || parsed > maximum) return false;
     *value = static_cast<int>(parsed);
     return true;
 }
@@ -193,10 +193,15 @@ std::string geng_command() {
 // 全グラフをちょうど 1 回ずつ調べたことになる。
 bool scan_part(const std::string &geng, int n, int m, int res, int mod, std::atomic<int> &best) {
     char cmd[256];
+    int length;
     if (mod == 1)
-        std::snprintf(cmd, sizeof cmd, "%s -tCq %d %d:%d", geng.c_str(), n, m, m);
+        length = std::snprintf(cmd, sizeof cmd, "%s -tCq %d %d:%d", geng.c_str(), n, m, m);
     else
-        std::snprintf(cmd, sizeof cmd, "%s -tCq %d %d:%d %d/%d", geng.c_str(), n, m, m, res, mod);
+        length = std::snprintf(cmd, sizeof cmd, "%s -tCq %d %d:%d %d/%d", geng.c_str(), n, m, m, res, mod);
+    if (length < 0 || static_cast<size_t>(length) >= sizeof cmd) {
+        std::fprintf(stderr, "geng command exceeds the command buffer.\n");
+        return false;
+    }
     FILE *in = popen(cmd, "r");
     if (!in) { std::perror("popen geng"); return false; }
     static thread_local Graph g;
@@ -211,6 +216,10 @@ bool scan_part(const std::string &geng, int n, int m, int res, int mod, std::ato
         int cur = best.load();
         int v = maxcut_below(g, cur);
         while (v < cur && !best.compare_exchange_weak(cur, v)) {}   // best = min(best, v)
+    }
+    if (std::ferror(in)) {
+        std::fprintf(stderr, "Error reading geng output for n=%d, m=%d.\n", n, m);
+        ok = false;
     }
     int st = pclose(in);
     if (ok && st != 0) {
@@ -228,8 +237,8 @@ int main(int argc, char **argv) {
         std::printf("Usage: %s [M [J]] (M is 1..%d, default 20; J = number of parallel geng processes, 1..64, default 1). Requires nauty geng.\n", argv[0], MAXM);
         return 0;
     }
-    if (argc > 3 || (argc >= 2 && !parse_limit(argv[1], &M)) ||
-        (argc == 3 && (!parse_limit(argv[2], &J) || J > 64))) {
+    if (argc > 3 || (argc >= 2 && !parse_limit(argv[1], MAXM, &M)) ||
+        (argc == 3 && (!parse_limit(argv[2], 64, &J)))) {
         std::fprintf(stderr, "Usage: %s [M [J]]; M in 1..%d, J in 1..64.\n", argv[0], MAXM);
         return 1;
     }
