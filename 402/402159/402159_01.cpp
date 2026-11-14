@@ -9,9 +9,9 @@
  *  (1) 上界: n_1 = n なら、相異なる k 個の分母はすべて n 以上なので
  *        1 = Sum 1/n_i <= 1/n + 1/(n+1) + ... + 1/(n+k-1)。
  *      よって f(k) <= u(k) := (右辺 >= 1 を満たす最大の n)。
- *  (2) k >= 3 なら n_1 = 2 の表し方が存在する（1 = 1/2 + 1/3 + 1/6 から始め、最大の分母 d を
- *      1/d = 1/(d+1) + 1/(d(d+1)) で置き換えると、分母は相異なるまま項が 1 つ増える）。
- *      u(k) の上界から 2 まで「n_1 = n の表し方があるか」を調べ、最初の解を得た n が f(k)。
+ *  (2) f(3) >= 2（1 = 1/2 + 1/3 + 1/6）。k >= 4 では、k-1 項表示の最大分母 d の逆数を
+ *      1/d = 1/(d+1) + 1/(d(d+1)) で分けると、最小分母を保ったまま項が 1 つ増える。
+ *      よって f(k) >= f(k-1)。上界から下界を超える候補だけを順に調べる。
  *  (3) 探索（残りの値 r = p/q を、分母 lo 以上の相異なる c 個の単位分数の和で表せるか）:
  *      ・c >= 2 なら次の分母 d は 1/d < r より d > q/p、かつ d >= lo。
  *      ・c 個の和は c/d 以下なので c/d >= r が必要（d について単調、成り立たなければ以後も不可）。
@@ -311,27 +311,26 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "Usage: %s [K]; K must be a decimal integer in 3..200.\n", argv[0]);
         return 1;
     }
+    long long lower_bound = 2;  // The representation 1/2 + 1/3 + 1/6.
     for (int k = 3; k <= K; k++) {
         // Since 1 <= k/n_1, k is an upper bound even if rounding leaves a candidate.
-        long long u = 1;
-        for (long long n = 2; n <= k; ++n) {
+        long long u = lower_bound;
+        for (long long n = lower_bound + 1; n <= k; ++n) {
             if (harmonic_upper_below(n, k, 1, 1)) break;
             u = n;
         }
-        long long found = -1;
-        for (long long n1 = u; n1 >= 2; n1--) {    // 事実 (2)
+        for (long long n1 = u; n1 > lower_bound; --n1) {
             // 1 - 1/n1 = (n1-1)/n1 を、n1+1 以上の相異なる k-1 個の単位分数で
             depth = 0;
             chosen[depth++] = n1;
             bool ok = representable(n1 - 1, n1, k - 1, n1 + 1);
             depth = 0;
-            if (ok) { found = n1; break; }
+            if (ok) {
+                lower_bound = n1;
+                break;
+            }
         }
-        if (found < 0) {
-            std::fprintf(stderr, "\nNo representation found for k=%d (should not happen).\n", k);
-            return 1;
-        }
-        if (std::printf(k == 3 ? "%lld" : ", %lld", found) < 0 || std::fflush(stdout) != 0) {
+        if (std::printf(k == 3 ? "%lld" : ", %lld", lower_bound) < 0 || std::fflush(stdout) != 0) {
             std::perror("write standard output");
             return 1;
         }
