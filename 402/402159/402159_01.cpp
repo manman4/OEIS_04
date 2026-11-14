@@ -11,36 +11,35 @@
  *      よって f(k) <= u(k) := (右辺 >= 1 を満たす最大の n)。
  *  (2) k >= 3 なら n_1 = 2 の表し方が存在する（1 = 1/2 + 1/3 + 1/6 から始め、最大の分母 d を
  *      1/d = 1/(d+1) + 1/(d(d+1)) で置き換えると、分母は相異なるまま項が 1 つ増える）。
- *      よって n = u(k), u(k)-1, ..., 2 の順に「n_1 = n の表し方があるか」を調べれば、
- *      最初に見つかった n が f(k) であり、探索は必ず止まる。
+ *      u(k) の上界から 2 まで「n_1 = n の表し方があるか」を調べ、最初の解を得た n が f(k)。
  *  (3) 探索（残りの値 r = p/q を、分母 lo 以上の相異なる c 個の単位分数の和で表せるか）:
- *      ・次の（最小の）分母 d は 1/d <= r より d >= ceil(q/p)、かつ d >= lo。
+ *      ・c >= 2 なら次の分母 d は 1/d < r より d > q/p、かつ d >= lo。
  *      ・c 個の和は c/d 以下なので c/d >= r が必要（d について単調、成り立たなければ以後も不可）。
  *      ・c 個の和は 1/d + ... + 1/(d+c-1) 以下なので、これが r 未満なら打ち切る（d について単調）。
- *        この和は long double で計算し、誤差（1e-12 未満）より十分大きい余裕 1e-9 をとって
- *        「確実に r 未満」のときだけ打ち切る（打ち切りの判定で解を落とさない）。
+ *        浮動小数点で打ち切り候補を選び、各逆数を 2^120 倍して整数に切り上げた
+ *        上界を r と厳密に比較してから打ち切る。
  *      ・c = 1 なら r が 1/d（d >= lo）の形かを直接調べる。
  *  (4) 残り 2 項（c = 2）: 1/a + 1/b = p/q（a < b）は pab = q(a+b)、すなわち
  *        (pa - q)(pb - q) = q^2,  0 < pa - q < pb - q
  *      と同値。よって x = pa - q は q^2 の約数で x < q を満たし、逆にそのような x から
  *      a = (x+q)/p、b = (q^2/x + q)/p が整数なら解になる。
  *      r = 1 - (選んだ単位分数の和) の既約分母 q は、選んだ分母の最小公倍数を割り切るので、
- *      q の素因数は選んだ分母の素因数に含まれる。選んだ分母（2^62 未満）を Miller-Rabin
+ *      q の素因数は選んだ分母の素因数に含まれる。選んだ分母（2^62 以下）を Miller-Rabin
  *      （64 bit で決定的な底）と Pollard rho で素因数分解し、q を分解して約数を列挙する。
  *      b の整数性は、q^2/x を作らずに (q^2/x) mod p を素因数の積から計算して判定する
  *      （q^2 は 2^128 を超えうるため）。
  *      a の候補が少ない（20 万以下）ときは、a を 1 つずつ試す直接法を使う。
  *      分解で q が割り切れきらない場合（理論上起こらない）も直接法に戻る。
  *
- * 安全性: 分数は既約にして __int128 で計算し、積が 2^120 を超えそうになったら
- *         誤った値を出さずにエラーで停止する。
+ * 安全性: 分数は既約にして __int128 で計算する。必要な積が 2^120 を超える場合や
+ *         選ぶ分母が 2^62 を超える場合は、その項を未確定として終了コード 2 で停止する。
  *
  * 検証: k <= 19 を、Python の Fraction（多倍長の厳密な有理数）で、事実 (4) を使わずに
  *       同じ探索をした結果と照合した。k <= 21 は事実 (4) を使わない版と、k <= 25 は
  *       直接法と約数法の切り替えの基準を変えた版（通る計算の経路が異なる）と照合した。
  *
- * コンパイル: g++ -O2 -std=c++17 -Wall -Wextra -Wpedantic -Werror 284_01.cpp -o 284_01
- * 実行:       ./284_01 [K]   （K の既定値 30、3 <= K <= 200）
+ * コンパイル: g++ -O2 -std=c++17 -Wall -Wextra -Wpedantic -Werror 402159_01.cpp -o 402159_01
+ * 実行:       ./402159_01 [K]   （K の既定値 30、3 <= K <= 200）
  */
 #include <cerrno>
 #include <cstdio>
@@ -55,7 +54,9 @@
 namespace {
 
 __extension__ typedef __int128 i128;
+__extension__ typedef unsigned __int128 u128;
 const i128 LIMIT = static_cast<i128>(1) << 120;
+const long long MAX_CHOSEN = 1LL << 62;
 
 i128 gcd128(i128 a, i128 b) {
     if (a < 0) a = -a;
@@ -64,14 +65,14 @@ i128 gcd128(i128 a, i128 b) {
     return a;
 }
 
-[[noreturn]] void overflow_stop() {
-    std::fprintf(stderr, "\nInteger range exceeded (2^120); stopping without printing a wrong value.\n");
+[[noreturn]] void search_stop(const char *reason) {
+    std::fprintf(stderr, "\nCurrent term unresolved: %s.\n", reason);
     std::exit(2);
 }
 
 // a*b を範囲検査つきで計算（a, b >= 0）
 i128 mul_checked(i128 a, i128 b) {
-    if (a != 0 && b > LIMIT / a) overflow_stop();
+    if (a != 0 && b > LIMIT / a) search_stop("integer product exceeds 2^120");
     return a * b;
 }
 
@@ -82,9 +83,35 @@ long double harmonic_block(long long d, int c) {
     return s;
 }
 
+// Compare positive fractions (with nonnegative numerators) without cross products.
+bool fraction_less(u128 a, u128 b, u128 c, u128 d) {
+    bool reversed = false;
+    for (;;) {
+        u128 lhs = a / b, rhs = c / d;
+        if (lhs != rhs) return reversed ? lhs > rhs : lhs < rhs;
+        a %= b;
+        c %= d;
+        if (a == 0 || c == 0) return reversed ? c == 0 && a != 0 : a == 0 && c != 0;
+        // Removing equal integer parts preserves order. Taking reciprocals reverses it.
+        std::swap(a, b);
+        std::swap(c, d);
+        reversed = !reversed;
+    }
+}
+
+bool harmonic_upper_below(long long d, int count, i128 p, i128 q) {
+    const u128 scale = static_cast<u128>(LIMIT);
+    u128 upper = 0;
+    // Round each reciprocal upward. count <= 200, so upper <= 200 * 2^120 < 2^128.
+    for (int i = 0; i < count; ++i) {
+        u128 denominator = static_cast<u128>(d + i);
+        upper += (scale + denominator - 1) / denominator;
+    }
+    return fraction_less(upper, scale, static_cast<u128>(p), static_cast<u128>(q));
+}
+
 // ---------- 64 bit 整数の素因数分解（Miller-Rabin + Pollard rho） ----------
 typedef unsigned long long u64;
-__extension__ typedef unsigned __int128 u128;
 
 u64 mulmod(u64 a, u64 b, u64 m) { return static_cast<u64>(static_cast<u128>(a) * b % m); }
 u64 powmod(u64 a, u64 e, u64 m) {
@@ -123,12 +150,13 @@ u128 mulmod128(u128 a, u128 b, u128 m) {
 u64 gcd64(u64 a, u64 b) { while (b) { u64 t = a % b; a = b; b = t; } return a; }
 u64 rho(u64 n) {
     if (n % 2 == 0) return 2;
-    for (u64 c = 1;; c++) {
+    for (u64 c = 1; c < n; c++) {
         u64 x = 2, y = 2, d = 1;
         auto f = [&](u64 v) { return (mulmod(v, v, n) + c) % n; };
         while (d == 1) { x = f(x); y = f(f(y)); d = gcd64(x > y ? x - y : y - x, n); }
         if (d != n) return d;
     }
+    search_stop("factorization did not produce a divisor");
 }
 void factor_rec(u64 n, std::vector<u64> &out) {
     if (n == 1) return;
@@ -215,7 +243,8 @@ bool two_terms(i128 p, i128 q, long long lo) {
                     ex[idx] = e;
                     rec(idx + 1, v);
                     if (found) return;
-                    v *= static_cast<i128>(fac[idx].first);   // v < q < 2^120、素因数 < 2^62
+                    if (e == fac[idx].second || v > (q - 1) / fac[idx].first) break;
+                    v *= static_cast<i128>(fac[idx].first);
                 }
                 ex[idx] = 0;
             };
@@ -236,22 +265,18 @@ bool two_terms(i128 p, i128 q, long long lo) {
 bool representable(i128 p, i128 q, int c, long long lo) {
     if (c == 1) return p == 1 && q >= lo;
     if (c == 2) return two_terms(p, q, lo);
-    // d >= ceil(q/p)
-    i128 dmin128 = (q + p - 1) / p;
-    long long d = lo;
-    if (dmin128 > d) {
-        if (dmin128 > static_cast<i128>(1) << 62) return false;   // c/d >= r が成り立たない範囲
-        d = static_cast<long long>(dmin128);
-    }
+    i128 first = std::max(static_cast<i128>(lo), q / p + 1);
+    // Since c <= 200 and q <= 2^120, the product fits in unsigned 128 bits.
+    u128 last = static_cast<u128>(c) * static_cast<u128>(q) / static_cast<u128>(p);
+    if (static_cast<u128>(first) > last) return false;
+    if (first > MAX_CHOSEN) search_stop("a candidate denominator exceeds 2^62");
+    long long d = static_cast<long long>(first);
     const long double r = static_cast<long double>(p) / static_cast<long double>(q);
-    for (;; d++) {
-        // c/d >= r  <=>  c*q >= p*d
-        if (mul_checked(c, q) < mul_checked(p, d)) return false;
-        // 1/d + ... + 1/(d+c-1) >= r が必要（確実に満たさないときだけ打ち切る）
-        if (harmonic_block(d, c) + 1e-9L < r) return false;
+    for (; static_cast<u128>(d) <= last; ++d) {
+        if (d > MAX_CHOSEN) search_stop("a candidate denominator exceeds 2^62");
+        if (harmonic_block(d, c) + 1e-9L < r && harmonic_upper_below(d, c, p, q)) return false;
         // r - 1/d = (p*d - q) / (q*d)
         i128 np = mul_checked(p, d) - q;
-        if (np <= 0) continue;            // 1/d > r（d >= ceil(q/p) なので起こらないが念のため）
         i128 nq = mul_checked(q, d);
         i128 g = gcd128(np, nq);
         chosen[depth++] = d;
@@ -259,6 +284,7 @@ bool representable(i128 p, i128 q, int c, long long lo) {
         depth--;
         if (ok) return true;
     }
+    return false;
 }
 
 bool parse_limit(const char *text, int *value) {
@@ -286,27 +312,10 @@ int main(int argc, char **argv) {
         return 1;
     }
     for (int k = 3; k <= K; k++) {
-        // 事実 (1): u(k) = 1/n + ... + 1/(n+k-1) >= 1 を満たす最大の n（和は n について減少）
-        // 厳密に判定するため、浮動小数点の値が 1 に近いときは有理数で確かめる。
+        // Since 1 <= k/n_1, k is an upper bound even if rounding leaves a candidate.
         long long u = 1;
-        for (;;) {
-            long long n = u + 1;
-            long double s = harmonic_block(n, k);
-            bool ge1;
-            if (s > 1.0L + 1e-9L) ge1 = true;
-            else if (s < 1.0L - 1e-9L) ge1 = false;
-            else {
-                // 有理数で 1/n + ... + 1/(n+k-1) >= 1 を判定
-                i128 P = 0, Q = 1;
-                for (int i = 0; i < k; i++) {
-                    i128 d = n + i;
-                    i128 np = mul_checked(P, d) + Q, nq = mul_checked(Q, d);
-                    i128 g = gcd128(np, nq);
-                    P = np / g; Q = nq / g;
-                }
-                ge1 = P >= Q;
-            }
-            if (!ge1) break;
+        for (long long n = 2; n <= k; ++n) {
+            if (harmonic_upper_below(n, k, 1, 1)) break;
             u = n;
         }
         long long found = -1;
