@@ -6,8 +6,10 @@
 //        2, 91, 54398, 598788188, 105193842233746, ...
 //
 // Usage:  ./401117_01 N        computes a(1..N); after each n the b-file
-//                              b401117_01.txt ("n a(n)") is rewritten atomically
+//                              b401117_01.txt ("n a(n)") in the current
+//                              directory is saved atomically for each new term.
 //         ./401117_01 --help
+// Writers to this b-file must share the stable b401117_01.txt.lock flock.
 //
 // ---------------------------------------------------------------------------
 // Cells: the 4n^2 elementary triangles ("quarters" N,E,S,W of each unit
@@ -63,6 +65,13 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <sys/acl.h>
+#elif defined(__linux__)
+#include <linux/fs.h>
+#include <sys/syscall.h>
+#include <sys/xattr.h>
+#endif
 
 #ifndef MAXN
 #define MAXN 11
@@ -322,7 +331,7 @@ static void usage(FILE *f) {
     std::fprintf(f,
         "usage: 401117_01 N\n"
         "  computes a(1..N) (tilings of an n X n square, see source) and\n"
-        "  rewrites %s after each n\n"
+        "  saves each new term to %s in the current directory\n"
         "  1 <= N <= %d; saved lines are re-verified, lines beyond N are kept\n",
         OUTFILE, MAXN);
 }
@@ -340,7 +349,7 @@ static int parse_n(const char *s) {
     return (int)v;
 }
 static void open_lock() {
-    int fd = open(LOCKFILE, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0644);
+    int fd = open(LOCKFILE, O_RDWR | O_CREAT | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC, 0644);
     if (fd < 0) die_errno("cannot open lock file");
     struct stat st;
     if (fstat(fd, &st) != 0) die_errno("fstat lock file");
@@ -350,9 +359,60 @@ static void open_lock() {
         die_errno("flock");
     }
 }
-static std::vector<std::string> read_saved() {
+struct SavedFile {
+    bool exists = false;
+    struct stat info {};
+};
+
+static bool same_time(const timespec &a, const timespec &b) {
+    return a.tv_sec == b.tv_sec && a.tv_nsec == b.tv_nsec;
+}
+
+static bool same_file(const struct stat &a, const struct stat &b) {
+    return a.st_dev == b.st_dev && a.st_ino == b.st_ino &&
+           a.st_mode == b.st_mode && a.st_nlink == b.st_nlink &&
+           a.st_uid == b.st_uid && a.st_gid == b.st_gid && a.st_size == b.st_size &&
+#if defined(__APPLE__)
+           same_time(a.st_mtimespec, b.st_mtimespec) && same_time(a.st_ctimespec, b.st_ctimespec);
+#else
+           same_time(a.st_mtim, b.st_mtim) && same_time(a.st_ctim, b.st_ctim);
+#endif
+}
+
+static bool still_current(const SavedFile &saved) {
+    struct stat st;
+    if (lstat(OUTFILE, &st) == 0) return saved.exists && same_file(saved.info, st);
+    return !saved.exists && errno == ENOENT;
+}
+
+#if defined(__APPLE__)
+static int copy_access_acl(int src, int dst) {
+    acl_t acl = src < 0 ? acl_init(0) : acl_get_fd(src);
+    if (!acl && src >= 0 && errno == ENOENT) acl = acl_init(0);
+    if (!acl) return -1;
+    int rc = acl_set_fd(dst, acl);
+    int err = errno;
+    acl_free(acl);
+    errno = err;
+    return rc;
+}
+#elif defined(__linux__)
+static int copy_access_acl(int src, int dst) {
+    const char *name = "system.posix_acl_access";
+    if (src >= 0) {
+        unsigned char acl[65536];  // Linux's maximum extended attribute size
+        ssize_t len = fgetxattr(src, name, acl, sizeof acl);
+        if (len >= 0) return fsetxattr(dst, name, acl, (size_t)len, 0);
+        if (errno != ENODATA && errno != ENOTSUP) return -1;
+    }
+    if (fremovexattr(dst, name) == 0 || errno == ENODATA || errno == ENOTSUP) return 0;
+    return -1;
+}
+#endif
+
+static std::vector<std::string> read_saved(SavedFile &saved) {
     std::vector<std::string> vals;
-    int fd = open(OUTFILE, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    int fd = open(OUTFILE, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) {
         if (errno == ENOENT) return vals;
         die_errno("cannot open saved file (symlink?)");
@@ -360,7 +420,7 @@ static std::vector<std::string> read_saved() {
     struct stat st;
     if (fstat(fd, &st) != 0) die_errno("fstat saved file");
     if (!S_ISREG(st.st_mode) || st.st_nlink != 1) die("saved file is not a plain regular file");
-    if ((size_t)st.st_size > MAX_SAVED_BYTES) die("saved file too large");
+    if (st.st_size < 0 || (uintmax_t)st.st_size > MAX_SAVED_BYTES) die("saved file too large");
     std::string data;
     char buf[65536];
     for (;;) {
@@ -370,15 +430,19 @@ static std::vector<std::string> read_saved() {
         data.append(buf, (size_t)r);
         if (data.size() > MAX_SAVED_BYTES) die("saved file too large");
     }
+    struct stat after;
+    if (fstat(fd, &after) != 0) die_errno("fstat saved file after reading");
+    if (data.size() != (size_t)st.st_size || !same_file(st, after))
+        die("saved file changed while reading (file left unchanged)");
     if (close(fd) != 0) die_errno("close saved file");
+    saved = {true, after};
+    if (!still_current(saved)) die("saved file changed while reading (file left unchanged)");
     size_t pos = 0;
     long expect = 1;
     while (pos < data.size()) {
         size_t nl = data.find('\n', pos);
-        if (nl == std::string::npos) {
-            std::fprintf(stderr, "401117_01: note: ignoring incomplete last line of %s\n", OUTFILE);
-            break;
-        }
+        if (nl == std::string::npos)
+            die("saved file: missing final newline (file left unchanged)");
         std::string line = data.substr(pos, nl - pos);
         pos = nl + 1;
         size_t sp = line.find(' ');
@@ -396,28 +460,79 @@ static std::vector<std::string> read_saved() {
     }
     return vals;
 }
-static void write_all(const std::vector<std::string> &vals) {
-    struct stat st;
-    if (lstat(OUTFILE, &st) == 0) {
-        if (!S_ISREG(st.st_mode) || st.st_nlink != 1)
-            die("refusing to replace result file: not a plain regular file");
-    } else if (errno != ENOENT) {
-        die_errno("lstat result file");
-    }
+static void write_all(const std::vector<std::string> &vals, SavedFile &saved) {
     std::string tmpl = std::string(OUTFILE) + ".tmpXXXXXX";
     std::vector<char> name(tmpl.begin(), tmpl.end());
     name.push_back('\0');
     int fd = mkstemp(name.data());
     if (fd < 0) die_errno("mkstemp");
-    if (fchmod(fd, 0644) != 0) { unlink(name.data()); die_errno("fchmod"); }
+    auto fail = [&](const char *message) {
+        int err = errno;
+        unlink(name.data());
+        errno = err;
+        die_errno(message);
+    };
+
+#if defined(__APPLE__) || defined(__linux__)
+    if (copy_access_acl(-1, fd) != 0) fail("clear inherited access ACL from temp");
+#endif
     FILE *f = fdopen(fd, "w");
-    if (!f) { close(fd); unlink(name.data()); die_errno("fdopen"); }
-    for (size_t i = 0; i < vals.size(); i++)
-        if (std::fprintf(f, "%zu %s\n", i + 1, vals[i].c_str()) < 0) { std::fclose(f); unlink(name.data()); die("write to temp file failed"); }
-    if (std::fflush(f) != 0) { std::fclose(f); unlink(name.data()); die_errno("fflush temp"); }
-    if (fsync(fileno(f)) != 0) { std::fclose(f); unlink(name.data()); die_errno("fsync temp"); }
-    if (std::fclose(f) != 0) { unlink(name.data()); die_errno("fclose temp"); }
-    if (rename(name.data(), OUTFILE) != 0) { unlink(name.data()); die_errno("rename"); }
+    if (!f) fail("fdopen");
+    for (size_t i = 0; i < vals.size(); i++) {
+        if (std::fprintf(f, "%zu %s\n", i + 1, vals[i].c_str()) < 0)
+            fail("write to temp file");
+    }
+    if (std::fflush(f) != 0) fail("fflush temp");
+    if (saved.exists) {
+        struct stat temp;
+        if (fstat(fd, &temp) != 0) fail("fstat temp");
+        if (temp.st_uid != saved.info.st_uid || temp.st_gid != saved.info.st_gid) {
+            if (fchown(fd, saved.info.st_uid, saved.info.st_gid) != 0)
+                fail("preserve result owner and group");
+        }
+    }
+    const mode_t mode = saved.exists ? saved.info.st_mode & 0777 : 0600;
+    if (fchmod(fd, mode) != 0) fail("set result permissions");
+#if defined(__APPLE__) || defined(__linux__)
+    if (saved.exists) {
+        int old_fd = open(OUTFILE, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+        if (old_fd < 0) fail("reopen saved file");
+        struct stat current;
+        if (fstat(old_fd, &current) != 0) fail("fstat saved file before writing");
+        if (!same_file(saved.info, current)) {
+            errno = ESTALE;
+            fail("saved file changed since reading (file left unchanged)");
+        }
+        if (copy_access_acl(old_fd, fd) != 0) fail("preserve result access ACL");
+        if (close(old_fd) != 0) fail("close saved file before writing");
+    }
+#endif
+    if (fsync(fd) != 0) fail("fsync temp");
+
+    // Writers that use this lock cannot change the file between this check
+    // and rename. POSIX rename alone has no compare-and-replace operation.
+    if (!still_current(saved)) {
+        errno = ESTALE;
+        fail("saved file changed since reading (file left unchanged)");
+    }
+    if (saved.exists) {
+        if (rename(name.data(), OUTFILE) != 0) fail("rename");
+    } else {
+        // Install the first result without overwriting a newly created file.
+#if defined(__APPLE__)
+        if (renamex_np(name.data(), OUTFILE, RENAME_EXCL) != 0) fail("publish new result");
+#elif defined(__linux__)
+        if (syscall(SYS_renameat2, AT_FDCWD, name.data(), AT_FDCWD, OUTFILE, RENAME_NOREPLACE) != 0)
+            fail("publish new result");
+#else
+        if (link(name.data(), OUTFILE) != 0) fail("publish new result");
+        if (unlink(name.data()) != 0) die_errno("unlink published temp name");
+#endif
+    }
+    if (fstat(fd, &saved.info) != 0) die_errno("fstat published result");
+    saved.exists = true;
+    if (std::fclose(f) != 0) die_errno("fclose published result");
+
     int dfd = open(".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (dfd < 0) die_errno("open directory");
     if (fsync(dfd) != 0) die_errno("fsync directory");
@@ -430,7 +545,8 @@ int main(int argc, char **argv) {
     const int N = parse_n(argv[1]);
 
     open_lock();
-    std::vector<std::string> vals = read_saved();
+    SavedFile saved;
+    std::vector<std::string> vals = read_saved(saved);
     if (vals.size() > (size_t)N)
         std::fprintf(stderr, "401117_01: note: keeping saved lines beyond N=%d (not re-verified)\n", N);
 
@@ -445,7 +561,7 @@ int main(int argc, char **argv) {
             if (std::printf("%d %s (verified)\n", n, v.c_str()) < 0) die("printf failed");
         } else {
             vals.push_back(v);
-            write_all(vals);
+            write_all(vals, saved);
             if (std::printf("%d %s\n", n, v.c_str()) < 0) die("printf failed");
         }
         if (std::fflush(stdout) != 0) die("fflush stdout failed");
