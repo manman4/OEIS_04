@@ -102,7 +102,10 @@ static const size_t MAX_DIGITS = 2000;
 static const int MAXKW = 10;     // key words (cells / 64)
 static const int MAXVW = 12;     // value limbs
 static constexpr size_t MIB = size_t{1} << 20;
-static size_t memory_limit = 1024 * MIB;
+static constexpr long MIN_MEMORY_MIB = 16;
+static constexpr long DEFAULT_MEMORY_MIB = 1024;
+static constexpr long MAX_MEMORY_MIB = 8704;
+static size_t memory_limit = (size_t)DEFAULT_MEMORY_MIB * MIB;
 static size_t map_memory = 0;
 
 [[noreturn]] static void die(const char *msg) {
@@ -389,8 +392,8 @@ static void usage(FILE *f) {
         "  computes a(1..N) (tilings of a right triangle with legs of length n)\n"
         "  saves each new term to %s in the current directory\n"
         "  1 <= N <= %d; saved lines through N are re-verified\n"
-        "  --memory-mib M: state table limit, 16 to 8192 MiB (default 1024)\n",
-        OUTFILE, MAXN);
+        "  --memory-mib M: state table limit, %ld to %ld MiB (default %ld)\n",
+        OUTFILE, MAXN, MIN_MEMORY_MIB, MAX_MEMORY_MIB, DEFAULT_MEMORY_MIB);
 }
 static int parse_n(const char *s) {
     if (!*s) die("N must be a positive integer");
@@ -612,10 +615,10 @@ int main(int argc, char **argv) {
     if (argc == 4 && !std::strcmp(argv[1], "--memory-mib")) {
         const char *mib = argv[2];
         if (!*mib || mib[std::strspn(mib, "0123456789")] != '\0')
-            die("--memory-mib must be an integer in 16..8192");
+            die("--memory-mib must be an integer");
         errno = 0;
         const long limit = std::strtol(mib, nullptr, 10);
-        if (errno || limit < 16 || limit > 8192 || (size_t)limit > SIZE_MAX / MIB)
+        if (errno || limit < MIN_MEMORY_MIB || limit > MAX_MEMORY_MIB || (size_t)limit > SIZE_MAX / MIB)
             die("--memory-mib is outside the supported range");
         memory_limit = (size_t)limit * MIB;
     } else if (argc != 2) {
