@@ -1,6 +1,7 @@
 /*
  * A402186 / Erdős Problem 160.  Usage: 402186_01 NMAX [SECONDS_PER_TERM]
- * Print one "n a(n)" row per completed term.  The optional limit defaults
+ * Print one "n a(n)" row per completed term, then a comma-separated list
+ * of values if all requested terms finish.  The optional limit defaults
  * to 60 seconds.  A timed-out term produces no row and exits with status 2.
  *
  * A restriction to a shorter interval is still valid, so the previous
@@ -219,6 +220,7 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
+    int terms[MAX_N];
     int count = 1;
     for (int n = 1; n <= nmax; ++n) {
         enum result answer = find_minimum(&state, n, &count);
@@ -240,11 +242,22 @@ int main(int argc, char **argv)
             fputs("Could not write term to standard output.\n", stderr);
             return EXIT_FAILURE;
         }
+        terms[n - 1] = count;
         fprintf(stderr, "N=%d: h=%d, colouring:", n, count);
         for (int x = 0; x < n; ++x) {
             fprintf(stderr, " %d", 1 + __builtin_ctzll(state.colour[x]));
         }
         fputc('\n', stderr);
+    }
+    for (int i = 0; i < nmax; ++i) {
+        if (printf("%s%d", i == 0 ? "" : ", ", terms[i]) < 0) {
+            fputs("Could not write the term list to standard output.\n", stderr);
+            return EXIT_FAILURE;
+        }
+    }
+    if (putchar('\n') == EOF || fflush(stdout) == EOF) {
+        fputs("Could not write the term list to standard output.\n", stderr);
+        return EXIT_FAILURE;
     }
     return EXIT_SUCCESS;
 }
