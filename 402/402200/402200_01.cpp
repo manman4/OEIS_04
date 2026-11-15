@@ -8,7 +8,9 @@
 //
 // Usage:  ./402200_01 N        computes a(1..N); after each n the b-file
 //                              b402200_01.txt ("n a(n)") is rewritten atomically
+//         ./402200_01 --memory-mib 4096 N
 //         ./402200_01 --help
+// Writers to this b-file must use the same b402200_01.txt.lock flock.
 //
 // ---------------------------------------------------------------------------
 // Cells: the 2n^2 elementary triangles ("quarters" N,E,S,W of the unit
@@ -69,6 +71,13 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <sys/acl.h>
+#elif defined(__linux__)
+#include <linux/fs.h>
+#include <sys/syscall.h>
+#include <sys/xattr.h>
+#endif
 
 #ifndef MAXN
 #define MAXN 17
@@ -90,6 +99,12 @@ static const char *LOCKFILE = "b402200_01.txt.lock";
 static const size_t MAX_SAVED_BYTES = 16u << 20;
 static const size_t MAX_DIGITS = 2000;
 static const int MAXKW = 10;     // key words (cells / 64)
+static constexpr size_t MIB = size_t{1} << 20;
+static constexpr long MIN_MEMORY_MIB = 16;
+static constexpr long DEFAULT_MEMORY_MIB = 1024;
+static constexpr long MAX_MEMORY_MIB = 8704;
+static size_t memory_limit = (size_t)DEFAULT_MEMORY_MIB * MIB;
+static size_t map_memory = 0;
 
 [[noreturn]] static void die(const char *msg) {
     std::fprintf(stderr, "402200_01: %s\n", msg);
@@ -179,17 +194,24 @@ struct Map {
     uint64_t *vals = nullptr;    // cap * LANES
     unsigned char *used = nullptr;
 };
+static size_t map_stride(int kw) {
+    return sizeof(uint64_t) * (size_t)(kw + LANES) + sizeof(unsigned char);
+}
+
 static void map_alloc(Map &m, int kw, size_t cap) {
-    if (cap < 16) cap = 16;
-    if (cap > SIZE_MAX / (sizeof(uint64_t) * (size_t)(kw + LANES) + 1)) die("hash table too large");
+    const size_t stride = map_stride(kw);
+    if (cap > (memory_limit - map_memory) / stride)
+        die("state tables exceeded the memory limit; try --memory-mib or a smaller N");
     m.kw = kw; m.cap = cap; m.cnt = 0;
     m.keys = kw ? static_cast<uint64_t *>(std::malloc(cap * (size_t)kw * sizeof(uint64_t))) : nullptr;
     m.vals = static_cast<uint64_t *>(std::malloc(cap * LANES * sizeof(uint64_t)));
     m.used = static_cast<unsigned char *>(std::calloc(cap, 1));
     if ((kw && !m.keys) || !m.vals || !m.used) die("out of memory (try a smaller N)");
+    map_memory += cap * stride;
 }
 static void map_free(Map &m) {
     std::free(m.keys); std::free(m.vals); std::free(m.used);
+    map_memory -= m.cap * map_stride(m.kw);
     m.keys = m.vals = nullptr; m.used = nullptr; m.cap = m.cnt = 0;
 }
 static inline size_t hash_key(const uint64_t *k, int kw, size_t cap) {
@@ -202,13 +224,18 @@ static void map_add(Map &m, const uint64_t *key, const uint64_t *val);
 static void map_resize(Map &m, size_t newcap) {
     Map n;
     map_alloc(n, m.kw, newcap);
-    for (size_t i = 0; i < m.cap; i++)
-        if (m.used[i]) map_add(n, m.keys + i * (size_t)m.kw, m.vals + i * LANES);
+    for (size_t i = 0; i < m.cap; i++) {
+        if (!m.used[i]) continue;
+        const uint64_t *key = m.kw ? m.keys + i * (size_t)m.kw : nullptr;
+        map_add(n, key, m.vals + i * LANES);
+    }
     map_free(m);
     m = n;
 }
 static void map_add(Map &m, const uint64_t *key, const uint64_t *val) {
-    if ((m.cnt + 1) * 20 > m.cap * 17) map_resize(m, m.cap + m.cap / 2 + 16);   // load <= 0.85
+    // Compute floor(0.85 * cap) without multiplying the whole capacity.
+    const size_t limit = (m.cap / 20) * 17 + (m.cap % 20) * 17 / 20;
+    if (m.cnt >= limit) map_resize(m, m.cap + m.cap / 2 + 16);
     const int kw = m.kw;
     size_t h = hash_key(key, kw, m.cap);
     for (;;) {
@@ -360,13 +387,13 @@ static void run_pass(int NQ, uint64_t *res, bool verbose, int n) {
         const int kw = B.kw;
         for (size_t i = 0; i < B.cap; i++) {
             if (!B.used[i]) continue;
-            const uint64_t *k = B.keys + i * (size_t)kw;
+            const uint64_t *k = kw ? B.keys + i * (size_t)kw : nullptr;
             const uint64_t *v = B.vals + i * LANES;
             for (const Tile &T : g_rel[f]) {
                 bool ok = true;
                 for (int w = 0; w < kw; w++) if (k[w] & T.m[w]) { ok = false; break; }
                 if (!ok) continue;
-                uint64_t u[MAXKW];
+                uint64_t u[MAXKW] = {};
                 for (int w = 0; w < kw; w++) u[w] = k[w] | T.m[w];
                 // first zero of u among the NQ-1-f valid bits
                 const int nb = NQ - 1 - f;
@@ -377,7 +404,7 @@ static void run_pass(int NQ, uint64_t *res, bool verbose, int n) {
                 }
                 const int f2 = f + 1 + z;                 // NQ if all covered
                 Map &D = bucket[f2];
-                uint64_t nk[MAXKW];
+                uint64_t nk[MAXKW] = {};
                 shift_right(u, kw, z + 1, nk, D.kw);      // bit j <-> cell f2+1+j
                 if (D.cap == 0) map_alloc(D, D.kw, 64);
                 size_t before = D.cnt;
@@ -397,6 +424,7 @@ static void run_pass(int NQ, uint64_t *res, bool verbose, int n) {
     for (size_t i = 0; i < F.cap; i++)
         if (F.used[i]) for (int l = 0; l < LANES; l++) res[l] = F.vals[i * LANES + l];
     map_free(F);
+    if (map_memory != 0) die("internal: state table accounting");
     if (verbose) std::fprintf(stderr, "402200_01:   n=%d: %zu states, peak %zu live\n", n, total, peak);
 }
 
@@ -456,11 +484,12 @@ static std::string compute_term(int n) {
 // ---------------- arguments and files ----------------
 static void usage(FILE *f) {
     std::fprintf(f,
-        "usage: 402200_01 N\n"
-        "  computes a(1..N) (tilings of an n X n square, see source) and\n"
-        "  rewrites %s after each n\n"
-        "  1 <= N <= %d; saved lines are re-verified, lines beyond N are kept\n",
-        OUTFILE, MAXN);
+        "usage: 402200_01 [--memory-mib M] N\n"
+        "  computes a(1..N) (tilings of a right triangle with legs of length n)\n"
+        "  saves each new term to %s in the current directory\n"
+        "  1 <= N <= %d; saved lines through N are re-verified\n"
+        "  --memory-mib M: state table limit, %ld to %ld MiB (default %ld)\n",
+        OUTFILE, MAXN, MIN_MEMORY_MIB, MAX_MEMORY_MIB, DEFAULT_MEMORY_MIB);
 }
 static int parse_n(const char *s) {
     if (!*s) die("N must be a positive integer");
@@ -476,7 +505,7 @@ static int parse_n(const char *s) {
     return (int)v;
 }
 static void open_lock() {
-    int fd = open(LOCKFILE, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0644);
+    int fd = open(LOCKFILE, O_RDWR | O_CREAT | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0) die_errno("cannot open lock file");
     struct stat st;
     if (fstat(fd, &st) != 0) die_errno("fstat lock file");
@@ -486,9 +515,60 @@ static void open_lock() {
         die_errno("flock");
     }
 }
-static std::vector<std::string> read_saved() {
+struct SavedFile {
+    bool exists = false;
+    struct stat info {};
+};
+
+static bool same_time(const timespec &a, const timespec &b) {
+    return a.tv_sec == b.tv_sec && a.tv_nsec == b.tv_nsec;
+}
+
+static bool same_file(const struct stat &a, const struct stat &b) {
+    return a.st_dev == b.st_dev && a.st_ino == b.st_ino &&
+           a.st_mode == b.st_mode && a.st_nlink == b.st_nlink &&
+           a.st_uid == b.st_uid && a.st_gid == b.st_gid && a.st_size == b.st_size &&
+#if defined(__APPLE__)
+           same_time(a.st_mtimespec, b.st_mtimespec) && same_time(a.st_ctimespec, b.st_ctimespec);
+#else
+           same_time(a.st_mtim, b.st_mtim) && same_time(a.st_ctim, b.st_ctim);
+#endif
+}
+
+static bool still_current(const SavedFile &saved) {
+    struct stat st;
+    if (lstat(OUTFILE, &st) == 0) return saved.exists && same_file(saved.info, st);
+    return !saved.exists && errno == ENOENT;
+}
+
+#if defined(__APPLE__)
+static int copy_access_acl(int src, int dst) {
+    acl_t acl = src < 0 ? acl_init(0) : acl_get_fd(src);
+    if (!acl && src >= 0 && errno == ENOENT) acl = acl_init(0);
+    if (!acl) return -1;
+    int rc = acl_set_fd(dst, acl);
+    int err = errno;
+    acl_free(acl);
+    errno = err;
+    return rc;
+}
+#elif defined(__linux__)
+static int copy_access_acl(int src, int dst) {
+    const char *name = "system.posix_acl_access";
+    if (src >= 0) {
+        unsigned char acl[65536];  // Linux's maximum extended attribute size
+        ssize_t len = fgetxattr(src, name, acl, sizeof acl);
+        if (len >= 0) return fsetxattr(dst, name, acl, (size_t)len, 0);
+        if (errno != ENODATA && errno != ENOTSUP) return -1;
+    }
+    if (fremovexattr(dst, name) == 0 || errno == ENODATA || errno == ENOTSUP) return 0;
+    return -1;
+}
+#endif
+
+static std::vector<std::string> read_saved(SavedFile &saved) {
     std::vector<std::string> vals;
-    int fd = open(OUTFILE, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    int fd = open(OUTFILE, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) {
         if (errno == ENOENT) return vals;
         die_errno("cannot open saved file (symlink?)");
@@ -496,7 +576,7 @@ static std::vector<std::string> read_saved() {
     struct stat st;
     if (fstat(fd, &st) != 0) die_errno("fstat saved file");
     if (!S_ISREG(st.st_mode) || st.st_nlink != 1) die("saved file is not a plain regular file");
-    if ((size_t)st.st_size > MAX_SAVED_BYTES) die("saved file too large");
+    if (st.st_size < 0 || (uintmax_t)st.st_size > MAX_SAVED_BYTES) die("saved file too large");
     std::string data;
     char buf[65536];
     for (;;) {
@@ -506,15 +586,19 @@ static std::vector<std::string> read_saved() {
         data.append(buf, (size_t)r);
         if (data.size() > MAX_SAVED_BYTES) die("saved file too large");
     }
+    struct stat after;
+    if (fstat(fd, &after) != 0) die_errno("fstat saved file after reading");
+    if (data.size() != (size_t)st.st_size || !same_file(st, after))
+        die("saved file changed while reading (file left unchanged)");
     if (close(fd) != 0) die_errno("close saved file");
+    saved = {true, after};
+    if (!still_current(saved)) die("saved file changed while reading (file left unchanged)");
     size_t pos = 0;
     long expect = 1;
     while (pos < data.size()) {
         size_t nl = data.find('\n', pos);
-        if (nl == std::string::npos) {
-            std::fprintf(stderr, "402200_01: note: ignoring incomplete last line of %s\n", OUTFILE);
-            break;
-        }
+        if (nl == std::string::npos)
+            die("saved file: missing final newline (file left unchanged)");
         std::string line = data.substr(pos, nl - pos);
         pos = nl + 1;
         size_t sp = line.find(' ');
@@ -532,41 +616,116 @@ static std::vector<std::string> read_saved() {
     }
     return vals;
 }
-static void write_all(const std::vector<std::string> &vals) {
-    struct stat st;
-    if (lstat(OUTFILE, &st) == 0) {
-        if (!S_ISREG(st.st_mode) || st.st_nlink != 1)
-            die("refusing to replace result file: not a plain regular file");
-    } else if (errno != ENOENT) {
-        die_errno("lstat result file");
-    }
-    std::string tmpl = std::string(OUTFILE) + ".tmpXXXXXX";
-    std::vector<char> name(tmpl.begin(), tmpl.end());
-    name.push_back('\0');
-    int fd = mkstemp(name.data());
-    if (fd < 0) die_errno("mkstemp");
-    if (fchmod(fd, 0644) != 0) { unlink(name.data()); die_errno("fchmod"); }
+static int publish_new(const char *temporary)
+{
+#if defined(__APPLE__)
+    return renamex_np(temporary, OUTFILE, RENAME_EXCL);
+#elif defined(__linux__)
+    return (int)syscall(SYS_renameat2, AT_FDCWD, temporary, AT_FDCWD, OUTFILE,
+                        RENAME_NOREPLACE);
+#else
+    errno = ENOTSUP;
+    return -1;
+#endif
+}
+
+static void write_all(const std::vector<std::string> &vals, SavedFile &saved) {
+    if (!still_current(saved)) die("saved file changed since reading");
+    char folder[] = ".b402200_01.tmp.XXXXXX";
+    if (mkdtemp(folder) == nullptr) die_errno("create private save directory");
+    char temporary[sizeof(folder) + sizeof("/term")];
+    std::snprintf(temporary, sizeof(temporary), "%s/term", folder);
+    auto fail = [&](const char *message) {
+        const int error = errno;
+        unlink(temporary);
+        rmdir(folder);
+        errno = error;
+        die_errno(message);
+    };
+
+    const int folder_fd = open(folder, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (folder_fd < 0) fail("open private save directory");
+#if defined(__APPLE__) || defined(__linux__)
+    if (copy_access_acl(-1, folder_fd) != 0) fail("clear inherited ACL from save directory");
+#endif
+    if (close(folder_fd) != 0) fail("close private save directory");
+
+    const int fd = open(temporary, O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) fail("create result temporary");
     FILE *f = fdopen(fd, "w");
-    if (!f) { close(fd); unlink(name.data()); die_errno("fdopen"); }
-    for (size_t i = 0; i < vals.size(); i++)
-        if (std::fprintf(f, "%zu %s\n", i + 1, vals[i].c_str()) < 0) { std::fclose(f); unlink(name.data()); die("write to temp file failed"); }
-    if (std::fflush(f) != 0) { std::fclose(f); unlink(name.data()); die_errno("fflush temp"); }
-    if (fsync(fileno(f)) != 0) { std::fclose(f); unlink(name.data()); die_errno("fsync temp"); }
-    if (std::fclose(f) != 0) { unlink(name.data()); die_errno("fclose temp"); }
-    if (rename(name.data(), OUTFILE) != 0) { unlink(name.data()); die_errno("rename"); }
-    int dfd = open(".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (dfd < 0) die_errno("open directory");
-    if (fsync(dfd) != 0) die_errno("fsync directory");
-    if (close(dfd) != 0) die_errno("close directory");
+    if (!f) fail("open result temporary stream");
+    for (size_t i = 0; i < vals.size(); i++) {
+        if (std::fprintf(f, "%zu %s\n", i + 1, vals[i].c_str()) < 0)
+            fail("write result temporary");
+    }
+    if (std::fflush(f) != 0) fail("flush result temporary");
+
+    struct stat temp;
+    if (fstat(fd, &temp) != 0) fail("stat result temporary");
+    if (temp.st_size < 0 || (uintmax_t)temp.st_size > MAX_SAVED_BYTES) {
+        errno = EFBIG;
+        fail("result file too large");
+    }
+    if (saved.exists &&
+        (temp.st_uid != saved.info.st_uid || temp.st_gid != saved.info.st_gid) &&
+        fchown(fd, saved.info.st_uid, saved.info.st_gid) != 0)
+        fail("preserve result owner and group");
+    const mode_t mode = saved.exists ? saved.info.st_mode & 0777 : 0600;
+    if (fchmod(fd, mode) != 0) fail("set result permissions");
+#if defined(__APPLE__) || defined(__linux__)
+    if (saved.exists) {
+        const int old_fd = open(OUTFILE, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+        if (old_fd < 0) fail("reopen saved file");
+        struct stat current;
+        if (fstat(old_fd, &current) != 0) fail("stat saved file before writing");
+        if (!same_file(saved.info, current)) {
+            errno = ESTALE;
+            fail("saved file changed since reading");
+        }
+        if (copy_access_acl(old_fd, fd) != 0) fail("preserve result access ACL");
+        if (close(old_fd) != 0) fail("close saved file before writing");
+    }
+#endif
+    if (fsync(fd) != 0) fail("sync result temporary");
+
+    // The shared lock covers the final check and rename for cooperating writers.
+    if (!still_current(saved)) {
+        errno = ESTALE;
+        fail("saved file changed since reading");
+    }
+    if ((saved.exists ? rename(temporary, OUTFILE) : publish_new(temporary)) != 0)
+        fail("publish result");
+
+    if (rmdir(folder) != 0) die_errno("remove empty save directory");
+    const int dfd = open(".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dfd < 0) die_errno("open result directory");
+    if (fsync(dfd) != 0) die_errno("sync result directory");
+    if (close(dfd) != 0) die_errno("close result directory");
+    if (fstat(fd, &saved.info) != 0) die_errno("stat published result");
+    saved.exists = true;
+    if (std::fclose(f) != 0) die_errno("close published result");
 }
 
 int main(int argc, char **argv) {
     if (argc == 2 && (!std::strcmp(argv[1], "--help") || !std::strcmp(argv[1], "-h"))) { usage(stdout); return 0; }
-    if (argc != 2) { usage(stderr); return 1; }
-    const int N = parse_n(argv[1]);
+    if (argc == 4 && !std::strcmp(argv[1], "--memory-mib")) {
+        const char *mib = argv[2];
+        if (!*mib || mib[std::strspn(mib, "0123456789")] != '\0')
+            die("--memory-mib must be an integer");
+        errno = 0;
+        const long limit = std::strtol(mib, nullptr, 10);
+        if (errno || limit < MIN_MEMORY_MIB || limit > MAX_MEMORY_MIB || (size_t)limit > SIZE_MAX / MIB)
+            die("--memory-mib is outside the supported range");
+        memory_limit = (size_t)limit * MIB;
+    } else if (argc != 2) {
+        usage(stderr);
+        return 1;
+    }
+    const int N = parse_n(argv[argc - 1]);
 
     open_lock();
-    std::vector<std::string> vals = read_saved();
+    SavedFile saved;
+    std::vector<std::string> vals = read_saved(saved);
     if (vals.size() > (size_t)N)
         std::fprintf(stderr, "402200_01: note: keeping saved lines beyond N=%d (not re-verified)\n", N);
 
@@ -581,7 +740,7 @@ int main(int argc, char **argv) {
             if (std::printf("%d %s (verified)\n", n, v.c_str()) < 0) die("printf failed");
         } else {
             vals.push_back(v);
-            write_all(vals);
+            write_all(vals, saved);
             if (std::printf("%d %s\n", n, v.c_str()) < 0) die("printf failed");
         }
         if (std::fflush(stdout) != 0) die("fflush stdout failed");
