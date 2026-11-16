@@ -489,16 +489,53 @@ io_error:
     return false;
 }
 
-static bool replace_bfile(size_t n, mpz_srcptr result)
+typedef struct {
+    struct stat output;
+    struct stat error;
+    bool have_output;
+    bool have_error;
+} OutputFiles;
+
+static bool same_file(const struct stat *a, const struct stat *b)
+{
+    return a->st_dev == b->st_dev && a->st_ino == b->st_ino;
+}
+
+static bool bfile_output_conflict(const struct stat *data, const OutputFiles *streams)
+{
+    bool output_alias = streams->have_output && same_file(data, &streams->output);
+    bool error_alias = streams->have_error && same_file(data, &streams->error);
+    if (!output_alias && !error_alias)
+        return false;
+
+    /* A diagnostic must also avoid any stream redirected to the b-file. */
+    if (!error_alias)
+        fputs("402226_01: stdout is redirected to " BFILE "\n", stderr);
+    else if (!output_alias)
+        fputs("402226_01: stderr is redirected to " BFILE "\n", stdout);
+    return true;
+}
+
+static bool replace_bfile(size_t n, mpz_srcptr result, const struct stat *lock_stat,
+                          const OutputFiles *streams)
 {
     struct stat old_stat = {0};
     FILE *source = NULL;
     int original_fd = open(BFILE, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
     if (original_fd >= 0) {
-        if (fstat(original_fd, &old_stat) == 0 && S_ISREG(old_stat.st_mode))
-            source = fdopen(original_fd, "r");
-        if (source == NULL) {
+        if (fstat(original_fd, &old_stat) != 0 || !S_ISREG(old_stat.st_mode)) {
             fputs("402226_01: cannot read a regular " BFILE " file\n", stderr);
+        } else if (bfile_output_conflict(&old_stat, streams)) {
+            close(original_fd);
+            return false;
+        } else if (same_file(&old_stat, lock_stat)) {
+            fputs("402226_01: " BFILE " and its lock refer to the same file\n", stderr);
+        } else {
+            source = fdopen(original_fd, "r");
+            if (source == NULL)
+                perror("402226_01: opening the b-file stream");
+        }
+        if (source == NULL) {
             close(original_fd);
             return false;
         }
@@ -555,7 +592,7 @@ static bool replace_bfile(size_t n, mpz_srcptr result)
     return ok;
 }
 
-static bool save_bfile(size_t n, mpz_srcptr result)
+static bool save_bfile(size_t n, mpz_srcptr result, const OutputFiles *streams)
 {
     /* Lock a separate, stable inode since rename replaces the data inode. */
     int fd = open(BFILE ".lock", O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW |
@@ -577,7 +614,7 @@ static bool save_bfile(size_t n, mpz_srcptr result)
     } while (locked < 0 && errno == EINTR);
     if (locked < 0)
         perror("402226_01: locking the b-file");
-    bool ok = locked == 0 && replace_bfile(n, result);
+    bool ok = locked == 0 && replace_bfile(n, result, &st, streams);
     close(fd);
     return ok;
 }
@@ -606,6 +643,14 @@ static void usage(FILE *stream, const char *program)
 
 int main(int argc, char **argv)
 {
+    /* Check before progress or usage output, and again under the file lock. */
+    OutputFiles streams = {0};
+    streams.have_output = fstat(STDOUT_FILENO, &streams.output) == 0;
+    streams.have_error = fstat(STDERR_FILENO, &streams.error) == 0;
+    struct stat data;
+    if (stat(BFILE, &data) == 0 && bfile_output_conflict(&data, &streams))
+        return EXIT_FAILURE;
+
     if (argc == 2 && strcmp(argv[1], "--help") == 0) {
         usage(stdout, argv[0]);
         return EXIT_SUCCESS;
@@ -629,7 +674,7 @@ int main(int argc, char **argv)
     mpz_init(result);
     int status = EXIT_SUCCESS;
     for (size_t n = start; n <= end; ++n) {
-        if (!count_exact((int)n, mib * MIB, result) || !save_bfile(n, result)) {
+        if (!count_exact((int)n, mib * MIB, result) || !save_bfile(n, result, &streams)) {
             status = EXIT_FAILURE;
             break;
         }
