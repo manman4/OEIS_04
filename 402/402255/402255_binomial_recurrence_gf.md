@@ -151,3 +151,4 @@ $`m=0,1,\dots,5`$、$`r=-3,\dots,3`$、$`b(n) \in \{1,\ n+1,\ 2^n\}`$ のすべ�
 ## 参考文献
 
 - I. M. Gessel, Lagrange inversion, *J. Combin. Theory Ser. A* 144 (2016), 212–249.
+
