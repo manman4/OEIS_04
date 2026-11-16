@@ -32,14 +32,22 @@
  * This latter bound follows by multiplying branching bounds in sweep order
  * and depends only on the vertex rules and the frame.
  */
+#define _POSIX_C_SOURCE 200809L
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE
+#endif
 #include <errno.h>
-#include <gmp.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <gmp.h>
 
 enum {
     MAX_N = 15,
@@ -51,6 +59,7 @@ enum {
 
 #define MIB ((size_t)1048576)
 #define EMPTY_KEY UINT64_MAX
+#define BFILE "b402226.txt"
 
 typedef struct {
     uint64_t incoming[3];
@@ -391,6 +400,188 @@ static bool count_exact(int n, size_t limit, mpz_t result)
     return ok;
 }
 
+static bool write_term(FILE *stream, size_t n, mpz_srcptr result)
+{
+    return gmp_fprintf(stream, "%zu %Zd\n", n, result) >= 0;
+}
+
+/* The copy preserves existing lines, including comments and whitespace.
+   A missing index can be inserted anywhere in the increasing sequence. */
+static bool copy_bfile(FILE *source, FILE *dest, size_t n, mpz_srcptr result,
+                       bool *changed)
+{
+    char line[4096];
+    uintmax_t last = 0;
+    bool handled = false;
+    int ch;
+    while (source != NULL && (ch = fgetc(source)) != EOF) {
+        size_t len = 0;
+        while (ch != '\n') {
+            if (ch == EOF || ch == '\0' || len == sizeof line - 2)
+                goto invalid;
+            line[len++] = (char)ch;
+            ch = fgetc(source);
+        }
+        line[len++] = '\n';
+        line[len] = '\0';
+
+        char *p = line + strspn(line, " \t\r");
+        if (*p != '#' && *p != '\n') {
+            if (*p < '0' || *p > '9')
+                goto invalid;
+            char *number_end;
+            errno = 0;
+            uintmax_t index = strtoumax(p, &number_end, 10);
+            if (errno != 0 || index <= last ||
+                (*number_end != ' ' && *number_end != '\t'))
+                goto invalid;
+            last = index;
+
+            char *value = number_end + strspn(number_end, " \t");
+            size_t digits = strspn(value, "0123456789");
+            char *value_end = value + digits;
+            if (digits == strspn(value, "0") ||
+                value_end[strspn(value_end, " \t\r")] != '\n')
+                goto invalid;
+            if (!handled && index >= n) {
+                handled = true;
+                if (index == n) {
+                    char saved = *value_end;
+                    *value_end = '\0';
+                    mpz_t old;
+                    mpz_init(old);
+                    bool equal = mpz_set_str(old, value, 10) == 0 &&
+                                 mpz_cmp(old, result) == 0;
+                    mpz_clear(old);
+                    *value_end = saved;
+                    if (!equal) {
+                        fprintf(stderr, "%s already has a different value at n=%zu\n",
+                                BFILE, n);
+                        return false;
+                    }
+                } else {
+                    *changed = true;
+                    if (!write_term(dest, n, result))
+                        goto io_error;
+                }
+            }
+        }
+        if (fputs(line, dest) == EOF)
+            goto io_error;
+    }
+    if (source != NULL && ferror(source))
+        goto io_error;
+    if (!handled) {
+        *changed = true;
+        if (!write_term(dest, n, result))
+            goto io_error;
+    }
+    return true;
+
+invalid:
+    if (source != NULL && ferror(source))
+        goto io_error;
+    fprintf(stderr, "%s contains an invalid, incomplete, or unsorted line\n", BFILE);
+    return false;
+
+io_error:
+    perror("402226_01: copying " BFILE);
+    return false;
+}
+
+static bool replace_bfile(size_t n, mpz_srcptr result)
+{
+    struct stat old_stat = {0};
+    FILE *source = NULL;
+    int original_fd = open(BFILE, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (original_fd >= 0) {
+        if (fstat(original_fd, &old_stat) == 0 && S_ISREG(old_stat.st_mode))
+            source = fdopen(original_fd, "r");
+        if (source == NULL) {
+            fputs("402226_01: cannot read a regular " BFILE " file\n", stderr);
+            close(original_fd);
+            return false;
+        }
+    } else if (errno != ENOENT) {
+        perror("402226_01: opening " BFILE);
+        return false;
+    }
+
+    char name[] = BFILE ".tmp.XXXXXX";
+    int temp_fd = mkstemp(name);
+    FILE *dest = temp_fd >= 0 ? fdopen(temp_fd, "w") : NULL;
+    if (dest == NULL) {
+        perror("402226_01: creating temporary b-file");
+        if (temp_fd >= 0) {
+            close(temp_fd);
+            unlink(name);
+        }
+        if (source != NULL)
+            fclose(source);
+        return false;
+    }
+
+    bool changed = false;
+    bool ok = copy_bfile(source, dest, n, result, &changed);
+    if (source != NULL && fclose(source) == EOF) {
+        perror("402226_01: closing " BFILE);
+        ok = false;
+    }
+    if (ok && changed &&
+        (fflush(dest) == EOF ||
+         (original_fd >= 0 && fchmod(temp_fd, old_stat.st_mode & 0777) != 0) ||
+         fsync(temp_fd) != 0)) {
+        perror("402226_01: syncing temporary b-file");
+        ok = false;
+    }
+    if (fclose(dest) == EOF && ok) {
+        perror("402226_01: closing temporary b-file");
+        ok = false;
+    }
+    if (ok && changed) {
+        if (rename(name, BFILE) == 0) {
+            int dir = open(".", O_RDONLY | O_CLOEXEC);
+            ok = dir >= 0 && fsync(dir) == 0;
+            if (!ok)
+                perror("402226_01: syncing the directory after replacing " BFILE);
+            if (dir >= 0)
+                close(dir);
+            return ok;
+        }
+        perror("402226_01: replacing " BFILE);
+        ok = false;
+    }
+    unlink(name);
+    return ok;
+}
+
+static bool save_bfile(size_t n, mpz_srcptr result)
+{
+    /* Lock a separate, stable inode since rename replaces the data inode. */
+    int fd = open(BFILE ".lock", O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW |
+                  O_NONBLOCK, 0666);
+    if (fd < 0) {
+        perror("402226_01: opening the b-file lock");
+        return false;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        fputs("402226_01: b-file lock must be a regular file\n", stderr);
+        close(fd);
+        return false;
+    }
+    struct flock lock = {.l_type = F_WRLCK, .l_whence = SEEK_SET};
+    int locked;
+    do {
+        locked = fcntl(fd, F_SETLKW, &lock);
+    } while (locked < 0 && errno == EINTR);
+    if (locked < 0)
+        perror("402226_01: locking the b-file");
+    bool ok = locked == 0 && replace_bfile(n, result);
+    close(fd);
+    return ok;
+}
+
 static bool parse_number(const char *text, size_t max, size_t *result)
 {
     if (text[0] < '0' || text[0] > '9')
@@ -407,7 +598,7 @@ static bool parse_number(const char *text, size_t max, size_t *result)
 static void usage(FILE *stream, const char *program)
 {
     fprintf(stream, "Usage: %s [--start N] [--memory-mib MIB] N\n"
-                    "Compute through N (1..%d). Output completed n a(n) lines.\n"
+                    "Compute through N (1..%d). Save each completed n a(n) line in " BFILE ".\n"
                     "--start N       first index (default 1)\n"
                     "--memory-mib M  state table limit (default %d MiB)\n",
             program, MAX_N, DEFAULT_MIB);
@@ -438,11 +629,11 @@ int main(int argc, char **argv)
     mpz_init(result);
     int status = EXIT_SUCCESS;
     for (size_t n = start; n <= end; ++n) {
-        if (!count_exact((int)n, mib * MIB, result)) {
+        if (!count_exact((int)n, mib * MIB, result) || !save_bfile(n, result)) {
             status = EXIT_FAILURE;
             break;
         }
-        if (gmp_printf("%zu %Zd\n", n, result) < 0 || fflush(stdout) == EOF) {
+        if (!write_term(stdout, n, result) || fflush(stdout) == EOF) {
             fputs("402226_01: cannot write the result\n", stderr);
             status = EXIT_FAILURE;
             break;
