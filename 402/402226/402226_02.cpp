@@ -4,8 +4,8 @@
 //        triangles of integer side lengths (any sizes, both orientations).
 //        1, 117, 298538, 32053026686, 121885999659021819, ...
 //
-// Usage:  ./402226_02 N        computes a(1..N); after each n the b-file
-//                              b402226_02.txt ("n a(n)") is rewritten atomically
+// Usage:  ./402226_02 [--memory-mib MIB] N
+//         Computes a(1..N), updating b402226_02.txt after each new term.
 //         ./402226_02 --help
 //
 // ---------------------------------------------------------------------------
@@ -34,8 +34,8 @@
 // cells).  Cells outside [L(r+1), R(r+1)] may not be used.  A tiling is
 // determined by its sequence of rows (a continued up slice has length >= 3,
 // so it is not a new triangle; down triangles cannot stop early), and every
-// admissible sequence whose last row has only down slices of length 1 is a
-// tiling.  Hence
+// admissible sequence in which every down slice in the last row has length 1
+// is a tiling.  Hence
 //      a(n) <= B(n) := prod_{r=0}^{2n-1} F(R(r) - L(r) + 1).
 // This is the same model as for the equilateral triangle (358715_01.c, rows
 // 0..2i); the hexagon only changes the ranges [L(r), R(r)].
@@ -96,13 +96,21 @@
 #endif
 static_assert(MAXN >= 1 && MAXN <= 13, "MAXN must be in 1..13 (4n-1 cut bits + 9 context bits < 64)");
 static_assert(LANES >= 1 && LANES <= 16, "LANES must be in 1..16");
+static_assert(SHAPE == 0 || SHAPE == 1, "SHAPE must be 0 or 1");
 
 __extension__ typedef unsigned __int128 u128;
 
+#if SHAPE == 1
+static const char *OUTFILE = "b402226_02_triangle_test.txt";
+static const char *LOCKFILE = "b402226_02_triangle_test.txt.lock";
+#else
 static const char *OUTFILE = "b402226_02.txt";
 static const char *LOCKFILE = "b402226_02.txt.lock";
+#endif
 static const size_t MAX_SAVED_BYTES = 16u << 20;
 static const size_t MAX_DIGITS = 2000;
+static constexpr size_t MIB = 1024 * 1024;
+static constexpr size_t DEFAULT_MEMORY_MIB = std::min<size_t>(4096, SIZE_MAX / MIB);
 
 [[noreturn]] static void die(const char *msg) {
     std::fprintf(stderr, "402226_02: %s\n", msg);
@@ -190,16 +198,27 @@ struct Map {
     uint64_t *keys = nullptr;
     uint64_t *vals = nullptr;
 };
+static constexpr size_t MAP_SLOT_BYTES = sizeof(uint64_t) * (1 + LANES);
+static size_t map_memory_limit = DEFAULT_MEMORY_MIB * MIB;
+static size_t map_memory_used = 0;
 static void map_alloc(Map &m, size_t cap) {
     if (cap < 64) cap = 64;
-    if (cap > SIZE_MAX / (sizeof(uint64_t) * (1 + LANES))) die("hash table too large");
+    // Include both active maps and the extra allocation during a rehash.
+    if (cap > (map_memory_limit - map_memory_used) / MAP_SLOT_BYTES)
+        die("state-table memory limit exceeded (increase --memory-mib or use a smaller N or LANES)");
     m.cap = cap; m.cnt = 0;
     m.keys = static_cast<uint64_t *>(std::malloc(cap * sizeof(uint64_t)));
     m.vals = static_cast<uint64_t *>(std::malloc(cap * LANES * sizeof(uint64_t)));
     if (!m.keys || !m.vals) die("out of memory (try a smaller N or LANES)");
+    map_memory_used += cap * MAP_SLOT_BYTES;
     for (size_t i = 0; i < cap; i++) m.keys[i] = EMPTY;
 }
-static void map_free(Map &m) { std::free(m.keys); std::free(m.vals); m.keys = m.vals = nullptr; m.cap = m.cnt = 0; }
+static void map_free(Map &m) {
+    std::free(m.keys);
+    std::free(m.vals);
+    map_memory_used -= m.cap * MAP_SLOT_BYTES;
+    m = Map{};
+}
 static inline size_t slot0(uint64_t k, size_t cap) {
     k ^= k >> 33; k *= 0xff51afd7ed558ccdULL; k ^= k >> 33; k *= 0xc4ceb9fe1a85ec53ULL; k ^= k >> 33;
     return (size_t)(((u128)k * cap) >> 64);
@@ -212,10 +231,19 @@ static void map_resize(Map &m, size_t newcap) {
     map_free(m);
     m = n;
 }
-static void map_add(Map &m, uint64_t key, const uint64_t *v) {
-    if ((m.cnt + 1) * 5 > m.cap * 4) map_resize(m, m.cap + m.cap / 2 + 64);     // load <= 0.8
+static size_t find_slot(const Map &m, uint64_t key) {
     size_t h = slot0(key, m.cap);
-    while (m.keys[h] != EMPTY && m.keys[h] != key) { if (++h == m.cap) h = 0; }
+    while (m.keys[h] != EMPTY && m.keys[h] != key) {
+        if (++h == m.cap) h = 0;
+    }
+    return h;
+}
+static void map_add(Map &m, uint64_t key, const uint64_t *v) {
+    size_t h = find_slot(m, key);
+    if (m.keys[h] == EMPTY && (m.cnt + 1) * 5 > m.cap * 4) {
+        map_resize(m, m.cap + m.cap / 2 + 64);     // load <= 0.8
+        h = find_slot(m, key);
+    }
     uint64_t *d = m.vals + h * LANES;
     if (m.keys[h] == EMPTY) { m.keys[h] = key; std::memcpy(d, v, LANES * sizeof(uint64_t)); m.cnt++; }
     else for (int l = 0; l < LANES; l++) { uint64_t s = d[l] + v[l]; if (s >= g_p[l]) s -= g_p[l]; d[l] = s; }
@@ -421,11 +449,12 @@ static std::string compute_term(int n) {
 // ---------------- arguments and files ----------------
 static void usage(FILE *f) {
     std::fprintf(f,
-        "usage: 402226_02 N\n"
-        "  computes a(1..N) (tilings of an n X n square, see source) and\n"
-        "  rewrites %s after each n\n"
-        "  1 <= N <= %d; saved lines are re-verified, lines beyond N are kept\n",
-        OUTFILE, MAXN);
+        "usage: 402226_02 [--memory-mib MIB] N\n"
+        "  counts tilings of %s and saves new terms to %s\n"
+        "  1 <= N <= %d; saved lines through N are re-verified\n"
+        "  --memory-mib MIB limits state tables including rehashes (default %zu)\n",
+        SHAPE == 1 ? "an equilateral triangle (test mode)" : "a regular hexagon",
+        OUTFILE, MAXN, DEFAULT_MEMORY_MIB);
 }
 static int parse_n(const char *s) {
     if (!*s) die("N must be a positive integer");
@@ -440,8 +469,43 @@ static int parse_n(const char *s) {
     }
     return (int)v;
 }
+static size_t parse_memory_mib(const char *s) {
+    if (!*s) die("--memory-mib requires a positive integer");
+    for (const char *p = s; *p; p++)
+        if (*p < '0' || *p > '9') die("--memory-mib requires a positive integer");
+    errno = 0;
+    char *end = nullptr;
+    unsigned long long v = std::strtoull(s, &end, 10);
+    if (errno || *end || v == 0 || v > SIZE_MAX / MIB)
+        die("--memory-mib is out of range");
+    return static_cast<size_t>(v);
+}
+
+struct OutputFiles {
+    struct stat output{};
+    struct stat error{};
+    bool have_output = false;
+    bool have_error = false;
+};
+
+static bool same_file(const struct stat &a, const struct stat &b) {
+    return a.st_dev == b.st_dev && a.st_ino == b.st_ino;
+}
+
+static void reject_redirected_output(const struct stat &target, const OutputFiles &streams) {
+    bool out_alias = streams.have_output && same_file(target, streams.output);
+    bool err_alias = streams.have_error && same_file(target, streams.error);
+    if (!out_alias && !err_alias) return;
+    // Never report the conflict by writing to the b-file.
+    if (!err_alias)
+        std::fprintf(stderr, "402226_02: stdout is redirected to %s\n", OUTFILE);
+    else if (!out_alias)
+        std::fprintf(stdout, "402226_02: stderr is redirected to %s\n", OUTFILE);
+    std::exit(1);
+}
+
 static void open_lock() {
-    int fd = open(LOCKFILE, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0644);
+    int fd = open(LOCKFILE, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0644);
     if (fd < 0) die_errno("cannot open lock file");
     struct stat st;
     if (fstat(fd, &st) != 0) die_errno("fstat lock file");
@@ -451,15 +515,16 @@ static void open_lock() {
         die_errno("flock");
     }
 }
-static std::vector<std::string> read_saved() {
+static std::vector<std::string> read_saved(const OutputFiles &streams) {
     std::vector<std::string> vals;
-    int fd = open(OUTFILE, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    int fd = open(OUTFILE, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) {
         if (errno == ENOENT) return vals;
         die_errno("cannot open saved file (symlink?)");
     }
     struct stat st;
     if (fstat(fd, &st) != 0) die_errno("fstat saved file");
+    reject_redirected_output(st, streams);
     if (!S_ISREG(st.st_mode) || st.st_nlink != 1) die("saved file is not a plain regular file");
     if ((size_t)st.st_size > MAX_SAVED_BYTES) die("saved file too large");
     std::string data;
@@ -476,12 +541,9 @@ static std::vector<std::string> read_saved() {
     long expect = 1;
     while (pos < data.size()) {
         size_t nl = data.find('\n', pos);
-        if (nl == std::string::npos) {
-            std::fprintf(stderr, "402226_02: note: ignoring incomplete last line of %s\n", OUTFILE);
-            break;
-        }
-        std::string line = data.substr(pos, nl - pos);
-        pos = nl + 1;
+        size_t end = nl == std::string::npos ? data.size() : nl;
+        std::string line = data.substr(pos, end - pos);
+        pos = nl == std::string::npos ? end : nl + 1;
         size_t sp = line.find(' ');
         if (sp == std::string::npos || sp == 0 || sp + 1 >= line.size())
             die("saved file: malformed line (file left unchanged)");
@@ -497,9 +559,11 @@ static std::vector<std::string> read_saved() {
     }
     return vals;
 }
-static void write_all(const std::vector<std::string> &vals) {
+static void write_all(const std::vector<std::string> &vals, const OutputFiles &streams) {
     struct stat st;
-    if (lstat(OUTFILE, &st) == 0) {
+    bool exists = lstat(OUTFILE, &st) == 0;
+    if (exists) {
+        reject_redirected_output(st, streams);
         if (!S_ISREG(st.st_mode) || st.st_nlink != 1)
             die("refusing to replace result file: not a plain regular file");
     } else if (errno != ENOENT) {
@@ -510,13 +574,19 @@ static void write_all(const std::vector<std::string> &vals) {
     name.push_back('\0');
     int fd = mkstemp(name.data());
     if (fd < 0) die_errno("mkstemp");
-    if (fchmod(fd, 0644) != 0) { unlink(name.data()); die_errno("fchmod"); }
     FILE *f = fdopen(fd, "w");
     if (!f) { close(fd); unlink(name.data()); die_errno("fdopen"); }
     for (size_t i = 0; i < vals.size(); i++)
         if (std::fprintf(f, "%zu %s\n", i + 1, vals[i].c_str()) < 0) { std::fclose(f); unlink(name.data()); die("write to temp file failed"); }
     if (std::fflush(f) != 0) { std::fclose(f); unlink(name.data()); die_errno("fflush temp"); }
-    if (fsync(fileno(f)) != 0) { std::fclose(f); unlink(name.data()); die_errno("fsync temp"); }
+    if (exists && fchmod(fd, st.st_mode & 0777) != 0) {
+        int error = errno;
+        std::fclose(f);
+        unlink(name.data());
+        errno = error;
+        die_errno("preserving result file permissions");
+    }
+    if (fsync(fd) != 0) { std::fclose(f); unlink(name.data()); die_errno("fsync temp"); }
     if (std::fclose(f) != 0) { unlink(name.data()); die_errno("fclose temp"); }
     if (rename(name.data(), OUTFILE) != 0) { unlink(name.data()); die_errno("rename"); }
     int dfd = open(".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -526,12 +596,32 @@ static void write_all(const std::vector<std::string> &vals) {
 }
 
 int main(int argc, char **argv) {
-    if (argc == 2 && (!std::strcmp(argv[1], "--help") || !std::strcmp(argv[1], "-h"))) { usage(stdout); return 0; }
-    if (argc != 2) { usage(stderr); return 1; }
-    const int N = parse_n(argv[1]);
+    OutputFiles streams;
+    streams.have_output = fstat(STDOUT_FILENO, &streams.output) == 0;
+    streams.have_error = fstat(STDERR_FILENO, &streams.error) == 0;
+    struct stat target;
+    if (stat(OUTFILE, &target) == 0) reject_redirected_output(target, streams);
+
+    if (argc == 2 && (!std::strcmp(argv[1], "--help") || !std::strcmp(argv[1], "-h"))) {
+        usage(stdout);
+        return 0;
+    }
+    int N = 0;
+    bool have_memory_limit = false;
+    for (int i = 1; i < argc; i++) {
+        if (std::strcmp(argv[i], "--memory-mib") == 0) {
+            if (have_memory_limit || ++i == argc) die("expected one --memory-mib value");
+            map_memory_limit = parse_memory_mib(argv[i]) * MIB;
+            have_memory_limit = true;
+        } else {
+            if (N != 0) { usage(stderr); return 1; }
+            N = parse_n(argv[i]);
+        }
+    }
+    if (N == 0) { usage(stderr); return 1; }
 
     open_lock();
-    std::vector<std::string> vals = read_saved();
+    std::vector<std::string> vals = read_saved(streams);
     if (vals.size() > (size_t)N)
         std::fprintf(stderr, "402226_02: note: keeping saved lines beyond N=%d (not re-verified)\n", N);
 
@@ -546,7 +636,7 @@ int main(int argc, char **argv) {
             if (std::printf("%d %s (verified)\n", n, v.c_str()) < 0) die("printf failed");
         } else {
             vals.push_back(v);
-            write_all(vals);
+            write_all(vals, streams);
             if (std::printf("%d %s\n", n, v.c_str()) < 0) die("printf failed");
         }
         if (std::fflush(stdout) != 0) die("fflush stdout failed");
