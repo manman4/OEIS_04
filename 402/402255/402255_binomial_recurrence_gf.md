@@ -53,13 +53,13 @@ $`r=-1`$ では係数 $`(1+x)^{r+1}`$ が $`1`$ になり、$`r=0`$ では $`1+x
 $`n=0`$ でも、左辺は $`\binom{r}{0}a(0)=a(0)`$、右辺は $`2a(0)-b(0)=a(0)`$ で成り立つ（$`\binom{r}{0}=1`$ は負の $`r`$ でも正しい）。$`j=n-k`$ とおくと
 
 ```math
-2a(n) - b(n) = \sum_{j=0}^{n} \binom{mn+r}{n-j}\, a(j) \qquad (n\ge 0). \tag{1}
+2a(n) - b(n) = \sum_{j=0}^{n} \binom{mn+r}{n-j}\, a(j) \qquad (n\ge 0). \qquad (1)
 ```
 
 (1) の両辺に $`z^n`$ を掛けて $`n \ge 0`$ で足すと
 
 ```math
-2A(z) - B(z) = \sum_{j\ge0} a(j)\, S_j(z), \qquad S_j(z) = \sum_{n\ge0} \binom{mn+r}{n-j} z^n. \tag{2}
+2A(z) - B(z) = \sum_{j\ge0} a(j)\, S_j(z), \qquad S_j(z) = \sum_{n\ge0} \binom{mn+r}{n-j} z^n. \qquad (2)
 ```
 
 $`z^n`$ の係数は $`j \le n`$ の有限和なので、和の順序を入れ替えてよい（$`n<j`$ では $`\binom{mn+r}{n-j}=0`$）。
@@ -103,11 +103,12 @@ z'(t) = \frac{\varphi(t) - t\varphi'(t)}{\varphi(t)^2}, \qquad
 
 - $`x = z(1+x)^m`$ は $`z = x/(1+x)^m`$ と同じである。
 - $`[t^n]\, t^j (1+t)^{mn+r} = \binom{mn+r}{n-j}`$ なので、公式の左辺はちょうど $`S_j(z)`$ である。
-- $`z(1+x)^m = x`$ を使うと
 
-  ```math
-  1 - z\varphi'(x) = 1 - mz(1+x)^{m-1} = 1 - \frac{mx}{1+x} = \frac{1-(m-1)x}{1+x}.
-  ```
+また、$`z(1+x)^m = x`$ を使うと
+
+```math
+1 - z\varphi'(x) = 1 - mz(1+x)^{m-1} = 1 - \frac{mx}{1+x} = \frac{1-(m-1)x}{1+x}.
+```
 
 したがって
 
