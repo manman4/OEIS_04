@@ -1,4 +1,4 @@
-M=20;
+M=18;
 
 \\ a(n) = 1 + Sum_{k=1..n} binomial(n+4,k) * a(n-k).
 a(n) = 1 + sum(k=1, n, binomial(n+4, k) * a(n-k));
