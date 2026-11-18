@@ -4,6 +4,9 @@ M=14;
 a(n) = my(v=[1, 6, 46, 356, 2751]); if(n<5, v[n+1], 2 * (5*a(n-1) - 10*a(n-2) + 10*a(n-3) - 5*a(n-4) + a(n-5)));
 for(n=0, M, print1(a(n), ", "));
 
+\\ Partial sums of A145841.
+for(n=0, M, print1(a(n+1)-a(n), ", "));
+
 
 
 
