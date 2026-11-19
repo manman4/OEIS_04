@@ -2,7 +2,7 @@
 def A(n):
     ary = [1]
     for n_ in range(1, n + 1):
-        s = 0
+        s = 1
         for k in range(1, n_ + 1):
             s += k**n_ * ary[n_ - k]
         ary.append(s)
