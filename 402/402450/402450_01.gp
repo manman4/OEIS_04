@@ -1,4 +1,4 @@
-M=19;
+M=17;
 
 \\ a(n) = 1 + Sum_{k=1..n} binomial(3*n+k,k) * a(n-k).
 a(n) = 1 + sum(k=1, n, binomial(3*n+k, k) * a(n-k));
