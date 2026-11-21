@@ -17,28 +17,42 @@
  * therefore integer distances from its endpoint. Connectedness of tile
  * perimeters then puts all tile vertices on the frame's unit lattice.
  *
- * A profile records the number of rows still occupied by earlier squares,
- * including the current row, in each column. Decrement these depths for
- * the following row. At the first free cell, choose the side k of its tile.
- * The k columns must be free and column+y+2*k-2 < n. Mark the following
- * k-1 rows in those columns and continue at column+k. This covers each row
- * exactly once, and every tiling makes a unique sequence of these choices.
+ * A row profile gives the remaining occupied depth in each column.
+ * If an active square has side k, its depth d satisfies 1 <= d < k,
+ * and its k columns have the same depth. Hence a maximal positive plateau
+ * of width w and depth d always satisfies w >= d+1. Encode that plateau
+ * by w two-bit tokens: 01, then d-1 copies of 11, then w-d copies of 10.
+ * A zero column is 00. Maximal plateaus make the encoding canonical.
+ * This stores 32 columns in one 64-bit key. The last staircase column
+ * can only contain a unit square, so its two bits are always zero, and
+ * UINT64_MAX cannot be a real key.
  *
- * Input range 1..32. Square sides are at most floor((n+1)/2) <= 16.
- * Remaining depths are at most 15, so two 64-bit words store 32 nibbles.
- * Column 31 is never occupied by an earlier square: the staircase has
- * just one cell in that column. Thus the high word's top nibble is zero,
- * and the all-ones sentinel cannot be a valid key. Every shift is <= 60.
+ * Decode a row and decrement occupied depths for the next row. At its
+ * first free cell (column,y), choose a square side k. The k columns must
+ * be free, and column+y+2*k-2 < n. Fill those columns in the next profile
+ * to depth k-1, merging equal neighboring plateaus. Each tiling makes a
+ * unique sequence of these choices. The row recursion has at most 32
+ * placements plus the terminating call (33 simultaneous calls).
  *
- * Counts use 32-bit prime residues and exact CRT reconstruction with GMP.
- * Trial division proves each modulus prime. The count is at most
- * floor((n+1)/2)^(n*(n+1)/2): at most this many side choices at each cell,
- * padding forced/covered cells with single choices. Once the product of
- * distinct moduli exceeds this bound, CRT uniquely specifies the count.
- * The bound is at most 16^528 and has fewer than 640 decimal digits.
- * Modular sums fit in 33 bits, CRT scalar products in 64 bits. The memory
- * budget includes both state maps and old/new allocations during rehashing.
- * The recursion has at most 32 levels. Memory exhaustion stops the term.
+ * Counts use LANES 32-bit primes in one pass (default 2), followed by
+ * exact CRT reconstruction with GMP. Trial division proves each modulus.
+ * A count bound is floor((n+1)/2)^(n*(n+1)/2), by bounding choices at each
+ * cell. A second bound follows by recording each tile's unit grid edges.
+ * At an interior vertex (n-1)*(n-2)/2 of them, given the incoming west and
+ * south edges, at most three outgoing east/north pairs can occur: the
+ * gaps between tile-boundary rays must be 90 or 180 degrees. At the
+ * 2*(n-1) straight boundary vertices there are at most two choices.
+ * At staircase corners, the outgoing edges are forced by the frame.
+ * Thus 3^((n-1)*(n-2)/2) * 2^(2*n-2) also bounds the count. Use the smaller
+ * bound, and stop only when the product of distinct primes exceeds it.
+ *
+ * Input range 1..32. Square sides are at most 16, depths at most 15.
+ * A positive plateau ends before column 31, so encoding never shifts by
+ * 64. Decoding shifts by at most 62, and working-depth shifts by at most
+ * 60. Modular sums fit in 33 bits and CRT scalar products in 64 bits.
+ * State-table allocation bounds include both maps and rehashing copies.
+ * Define LANES=1..8 at compile time to trade memory for fewer CRT passes.
+ * At the default LANES=2 each hash slot needs 8 + 2*4 = 16 bytes.
  *
  * The b-file is authoritative. Updates preserve saved rows, require any
  * recomputed row to agree, and use a separate stable advisory lock.
@@ -76,10 +90,16 @@ enum {
 #define EMPTY_KEY UINT64_MAX
 #define BFILE "b401338.txt"
 
+#ifndef LANES
+#define LANES 2
+#endif
+_Static_assert(LANES >= 1 && LANES <= 8, "LANES must be in 1..8");
+
+typedef uint64_t Key;
 typedef struct {
     uint64_t low;
     uint64_t high;
-} Key;
+} Profile;
 
 typedef struct {
     Key *keys;
@@ -95,27 +115,29 @@ typedef struct {
 
 static bool key_empty(Key key)
 {
-    return key.high == EMPTY_KEY;
+    return key == EMPTY_KEY;
 }
 
 static bool key_equal(Key a, Key b)
 {
-    return a.low == b.low && a.high == b.high;
+    return a == b;
 }
 
-static unsigned profile_get(Key key, unsigned column)
+static unsigned profile_get(Profile key, unsigned column)
 {
     uint64_t word = column < 16 ? key.low : key.high;
     return (unsigned)((word >> (4 * (column % 16))) & 15u);
 }
 
-static Key profile_insert(Key key, unsigned column, unsigned depth)
+static Profile profile_set(Profile key, unsigned column, unsigned depth)
 {
-    uint64_t bits = (uint64_t)depth << (4 * (column % 16));
+    unsigned shift = 4 * (column % 16);
+    uint64_t mask = UINT64_C(15) << shift;
+    uint64_t bits = (uint64_t)depth << shift;
     if (column < 16)
-        key.low |= bits;
+        key.low = (key.low & ~mask) | bits;
     else
-        key.high |= bits;
+        key.high = (key.high & ~mask) | bits;
     return key;
 }
 
@@ -123,7 +145,7 @@ static void table_free(Table *table, Budget *budget)
 {
     free(table->keys);
     free(table->values);
-    budget->allocated -= table->capacity * (sizeof(Key) + sizeof(uint32_t));
+    budget->allocated -= table->capacity * (sizeof(Key) + LANES * sizeof(uint32_t));
     *table = (Table){0};
 }
 
@@ -141,8 +163,7 @@ static uint64_t multiply_low(uint64_t x, uint64_t y)
 
 static size_t slot_for(const Table *table, Key key)
 {
-    uint64_t hash = key.low ^ multiply_low(key.high, UINT64_C(0x9e3779b97f4a7c15));
-    hash ^= hash >> 30;
+    uint64_t hash = key ^ (key >> 30);
     hash = multiply_low(hash, UINT64_C(0xbf58476d1ce4e5b9));
     hash ^= hash >> 27;
     hash = multiply_low(hash, UINT64_C(0x94d049bb133111eb));
@@ -156,7 +177,7 @@ static size_t slot_for(const Table *table, Key key)
 
 static bool table_grow(Table *table, Budget *budget)
 {
-    const size_t bytes_per_slot = sizeof(Key) + sizeof(uint32_t);
+    const size_t bytes_per_slot = sizeof(Key) + LANES * sizeof(uint32_t);
     /* Include old and new copies in the budget while rehashing. */
     size_t remaining = (budget->limit - budget->allocated) / bytes_per_slot;
     if (table->capacity > remaining / 2)
@@ -167,7 +188,7 @@ static bool table_grow(Table *table, Budget *budget)
 
     Table expanded = {0};
     expanded.keys = malloc(capacity * sizeof *expanded.keys);
-    expanded.values = calloc(capacity, sizeof *expanded.values);
+    expanded.values = calloc(capacity, LANES * sizeof *expanded.values);
     if (!expanded.keys || !expanded.values) {
         free(expanded.keys);
         free(expanded.values);
@@ -181,7 +202,8 @@ static bool table_grow(Table *table, Budget *budget)
         if (!key_empty(table->keys[i])) {
             size_t slot = slot_for(&expanded, table->keys[i]);
             expanded.keys[slot] = table->keys[i];
-            expanded.values[slot] = table->values[i];
+            memcpy(expanded.values + slot * LANES, table->values + i * LANES,
+                   LANES * sizeof *expanded.values);
         }
     }
     table_free(table, budget);
@@ -190,14 +212,17 @@ static bool table_grow(Table *table, Budget *budget)
 }
 
 static bool add_state(Table *table, Budget *budget, Key key,
-                      uint32_t value, uint32_t prime)
+                      const uint32_t values[LANES], const uint32_t primes[LANES])
 {
     if (table->capacity == 0 && !table_grow(table, budget))
         return false;
     size_t slot = slot_for(table, key);
     if (key_equal(table->keys[slot], key)) {
-        uint64_t sum = (uint64_t)table->values[slot] + value;
-        table->values[slot] = (uint32_t)(sum >= prime ? sum - prime : sum);
+        uint32_t *dest = table->values + slot * LANES;
+        for (unsigned lane = 0; lane < LANES; ++lane) {
+            uint64_t sum = (uint64_t)dest[lane] + values[lane];
+            dest[lane] = (uint32_t)(sum >= primes[lane] ? sum - primes[lane] : sum);
+        }
     } else {
         if (table->size >= table->capacity - table->capacity / 4) {
             if (!table_grow(table, budget))
@@ -205,8 +230,95 @@ static bool add_state(Table *table, Budget *budget, Key key,
             slot = slot_for(table, key);
         }
         table->keys[slot] = key;
-        table->values[slot] = value;
+        memcpy(table->values + slot * LANES, values, LANES * sizeof *values);
         ++table->size;
+    }
+    return true;
+}
+
+/* A positive plateau of width w and depth d has w >= d+1, because
+   every square crossing this row has side k > d and covers k columns.
+   Encode the plateau using w two-bit tokens: 01, (d-1) copies of 11,
+   then (w-d) copies of 10. A zero column is 00. Equal adjacent depths
+   are merged into maximal plateaus, giving a canonical 2*n-bit key. */
+static bool set_plateau(Key *key, unsigned start, unsigned end, unsigned depth)
+{
+    if (start >= end || end >= 32 || depth == 0 || depth >= 16 ||
+        end - start <= depth) {
+        fputs("401338_01: invalid active-square plateau\n", stderr);
+        return false;
+    }
+    unsigned length = end - start;
+    uint64_t mask = (UINT64_C(1) << (2 * length)) - 1;
+    uint64_t low = UINT64_C(0x5555555555555555) &
+                   ((UINT64_C(1) << (2 * depth)) - 1);
+    uint64_t high = UINT64_C(0xAAAAAAAAAAAAAAAA) & mask & ~UINT64_C(2);
+    *key = (*key & ~(mask << (2 * start))) | ((low | high) << (2 * start));
+    return true;
+}
+
+static bool encode_profile(Profile profile, unsigned width, Key *key)
+{
+    *key = 0;
+    for (unsigned column = 0; column < width;) {
+        unsigned depth = profile_get(profile, column);
+        if (depth == 0) {
+            ++column;
+            continue;
+        }
+        unsigned end = column + 1;
+        while (end < width && profile_get(profile, end) == depth)
+            ++end;
+        if (!set_plateau(key, column, end, depth))
+            return false;
+        column = end;
+    }
+    return true;
+}
+
+static bool place_square(Profile *profile, Key *key, unsigned column,
+                         unsigned side, unsigned width)
+{
+    if (side == 1)
+        return true;
+    unsigned depth = side - 1;
+    for (unsigned j = column; j < column + side; ++j)
+        *profile = profile_set(*profile, j, depth);
+    unsigned start = column;
+    unsigned end = column + side;
+    while (start > 0 && profile_get(*profile, start - 1) == depth)
+        --start;
+    while (end < width && profile_get(*profile, end) == depth)
+        ++end;
+    return set_plateau(key, start, end, depth);
+}
+
+static bool decode_profile(Key key, unsigned width, unsigned char profile[MAX_N],
+                           Profile *following)
+{
+    *following = (Profile){0};
+    for (unsigned column = 0; column < width;) {
+        unsigned token = (unsigned)((key >> (2 * column)) & 3u);
+        if (token == 0) {
+            profile[column++] = 0;
+            continue;
+        }
+        if (token != 1)
+            return false;
+        unsigned split = column + 1;
+        while (split < width && ((key >> (2 * split)) & 3u) == 3u)
+            ++split;
+        unsigned end = split;
+        while (end < width && ((key >> (2 * end)) & 3u) == 2u)
+            ++end;
+        unsigned depth = split - column;
+        if (end == split || depth >= 16)
+            return false;
+        for (unsigned j = column; j < end; ++j) {
+            profile[j] = (unsigned char)depth;
+            *following = profile_set(*following, j, depth - 1);
+        }
+        column = end;
     }
     return true;
 }
@@ -216,16 +328,16 @@ typedef struct {
     const unsigned char *profile;
     Table *dest;
     Budget *budget;
-    uint32_t value;
-    uint32_t prime;
+    const uint32_t *values;
+    const uint32_t *primes;
 } RowFill;
 
-static bool fill_row(const RowFill *fill, unsigned column, Key next)
+static bool fill_row(const RowFill *fill, unsigned column, Profile next, Key encoded)
 {
     while (column < fill->width && fill->profile[column] != 0)
         ++column;
     if (column == fill->width)
-        return add_state(fill->dest, fill->budget, next, fill->value, fill->prime);
+        return add_state(fill->dest, fill->budget, encoded, fill->values, fill->primes);
 
     /* The farthest cell of a square of side k, starting at (column,y),
        has x+y = column+y+2*k-2 and must be smaller than n. */
@@ -233,22 +345,25 @@ static bool fill_row(const RowFill *fill, unsigned column, Key next)
     for (unsigned side = 1; side <= largest; ++side) {
         if (fill->profile[column + side - 1] != 0)
             break;
-        Key placed = next;
-        for (unsigned j = column; j < column + side; ++j)
-            placed = profile_insert(placed, j, side - 1);
-        if (!fill_row(fill, column + side, placed))
+        Profile placed = next;
+        Key placed_key = encoded;
+        if (!place_square(&placed, &placed_key, column, side, fill->width) ||
+            !fill_row(fill, column + side, placed, placed_key))
             return false;
     }
     return true;
 }
 
-static bool count_mod(int n, uint32_t prime, size_t limit,
-                      uint32_t *residue, size_t *peak)
+static bool count_mod(int n, const uint32_t primes[LANES], size_t limit,
+                      uint32_t residues[LANES], size_t *peak)
 {
     Budget budget = {.limit = limit};
     Table current = {0}, next = {0};
     const Key zero = {0};
-    bool ok = add_state(&current, &budget, zero, 1, prime);
+    uint32_t one[LANES];
+    for (unsigned lane = 0; lane < LANES; ++lane)
+        one[lane] = 1;
+    bool ok = add_state(&current, &budget, zero, one, primes);
     *peak = current.size;
     for (unsigned width = (unsigned)n; ok && width != 0; --width) {
         if (next.capacity > MIN_CAPACITY && next.capacity / 8 > current.size)
@@ -261,12 +376,11 @@ static bool count_mod(int n, uint32_t prime, size_t limit,
             if (key_empty(key))
                 continue;
             unsigned char profile[MAX_N] = {0};
-            Key following = {0};
-            for (unsigned column = 0; column < width; ++column) {
-                unsigned depth = profile_get(key, column);
-                profile[column] = (unsigned char)depth;
-                if (depth != 0)
-                    following = profile_insert(following, column, depth - 1);
+            Profile following;
+            if (!decode_profile(key, width, profile, &following)) {
+                fputs("401338_01: invalid encoded profile\n", stderr);
+                ok = false;
+                break;
             }
             if (profile_get(following, width - 1) != 0) {
                 fputs("401338_01: a square extends outside the staircase\n", stderr);
@@ -275,11 +389,13 @@ static bool count_mod(int n, uint32_t prime, size_t limit,
             }
             RowFill fill = {
                 .width = width, .profile = profile, .dest = &next,
-                .budget = &budget, .value = current.values[i], .prime = prime
+                .budget = &budget, .values = current.values + i * LANES, .primes = primes
             };
             /* Zero residues are retained so all CRT passes use identical
                states and have the same allocation requirements. */
-            ok = fill_row(&fill, 0, following);
+            Key encoded;
+            ok = encode_profile(following, width, &encoded) &&
+                 fill_row(&fill, 0, following, encoded);
         }
         if (next.size > *peak)
             *peak = next.size;
@@ -293,7 +409,8 @@ static bool count_mod(int n, uint32_t prime, size_t limit,
             fputs("401338_01: inconsistent final profile\n", stderr);
             ok = false;
         } else {
-            *residue = current.values[slot_for(&current, zero)];
+            size_t slot = slot_for(&current, zero);
+            memcpy(residues, current.values + slot * LANES, LANES * sizeof *residues);
         }
     } else {
         fprintf(stderr, "401338_01: state table allocation failed or invalid profile "
@@ -326,6 +443,16 @@ static bool count_exact(int n, size_t limit, mpz_t result)
        side lengths for a square anchored at the first unfilled cell. */
     unsigned long cells = (unsigned long)n * (unsigned long)(n + 1) / 2;
     mpz_ui_pow_ui(bound, (unsigned long)(n + 1) / 2, cells);
+    /* A square tiling injects into its grid-edge boundary pattern.
+       Each interior vertex has at most 3 choices for its outgoing edges,
+       given the incoming edges. There are (n-1)*(n-2)/2 such vertices.
+       The 2*(n-1) straight boundary vertices have at most 2 choices each;
+       the staircase corners contribute no outgoing choices. */
+    unsigned long interior = (unsigned long)((n - 1) * (n - 2) / 2);
+    mpz_ui_pow_ui(inverse, 3, interior);
+    mpz_mul_2exp(inverse, inverse, (mp_bitcnt_t)(2 * (n - 1)));
+    if (mpz_cmp(inverse, bound) < 0)
+        mpz_set(bound, inverse);
     bool ok = true;
 
     mpz_set_ui(result, 0);
@@ -334,32 +461,37 @@ static bool count_exact(int n, size_t limit, mpz_t result)
     unsigned passes = 0;
     fprintf(stderr, "n=%d: computing\n", n);
     while (ok && mpz_cmp(product, bound) <= 0) {
-        uint32_t prime = previous_prime(candidate);
-        if (prime == 0) {
-            fputs("401338_01: exhausted CRT moduli\n", stderr);
-            ok = false;
-            break;
+        uint32_t primes[LANES], residues[LANES];
+        for (unsigned lane = 0; lane < LANES; ++lane) {
+            primes[lane] = previous_prime(candidate);
+            if (primes[lane] == 0) {
+                fputs("401338_01: exhausted CRT moduli\n", stderr);
+                ok = false;
+                break;
+            }
+            candidate = primes[lane] - 2;
         }
-        candidate = prime - 2;
-        uint32_t residue;
-        size_t peak;
-        ok = count_mod(n, prime, limit, &residue, &peak);
+        size_t peak = 0;
+        if (ok)
+            ok = count_mod(n, primes, limit, residues, &peak);
         if (!ok)
             break;
-
-        uint64_t x_mod = mpz_fdiv_ui(result, prime);
-        uint64_t delta = ((uint64_t)residue + prime - x_mod) % prime;
-        mpz_set_ui(inverse, prime);
-        if (mpz_invert(inverse, product, inverse) == 0) {
-            fputs("401338_01: CRT moduli are not coprime\n", stderr);
-            ok = false;
-            break;
+        for (unsigned lane = 0; lane < LANES; ++lane) {
+            uint32_t prime = primes[lane];
+            uint64_t x_mod = mpz_fdiv_ui(result, prime);
+            uint64_t delta = ((uint64_t)residues[lane] + prime - x_mod) % prime;
+            mpz_set_ui(inverse, prime);
+            if (mpz_invert(inverse, product, inverse) == 0) {
+                fputs("401338_01: CRT moduli are not coprime\n", stderr);
+                ok = false;
+                break;
+            }
+            unsigned long k = (unsigned long)((delta * mpz_get_ui(inverse)) % prime);
+            mpz_addmul_ui(result, product, k);
+            mpz_mul_ui(product, product, prime);
         }
-        /* delta and the inverse are below 2^32, so the product fits. */
-        unsigned long k = (unsigned long)((delta * mpz_get_ui(inverse)) % prime);
-        mpz_addmul_ui(result, product, k);
-        mpz_mul_ui(product, product, prime);
-        fprintf(stderr, "n=%d: CRT pass %u, peak %zu states\n", n, ++passes, peak);
+        fprintf(stderr, "n=%d: CRT pass %u (%u primes/pass), peak %zu states\n",
+                n, ++passes, (unsigned)LANES, peak);
     }
     if (ok && (mpz_sgn(result) <= 0 || mpz_cmp(result, bound) > 0)) {
         fputs("401338_01: result violates the count bounds\n", stderr);
