@@ -11,6 +11,8 @@
 // Usage:  ./402657_01 N        computes a(1..N); after each n the b-file
 //                              b402657_01.txt ("n a(n)") is rewritten atomically
 //         ./402657_01 --help
+// Incomplete saved lines are rejected. Existing permissions and macOS ACLs
+// are preserved. Do not redirect stdout or stderr to the b-file.
 //
 // ---------------------------------------------------------------------------
 // We count the mirror images in the horizontal midline: tilings in which the
@@ -36,14 +38,14 @@
 // column n-1 every rectangle has p = w-1.  Every tiling gives exactly one
 // admissible sequence of column states and conversely, so a(n) is the number
 // of these sequences.
-// Checked: n = 1..7 agree with a brute force that builds every tiling and
-// tests the condition; n = 1..9 agree with an independent Python version of
-// the column transfer.  For squares only, the same model gives A402607.
+// Checked: n = 1..4 agree with unrestricted enumeration followed by testing
+// the inequalities; n = 1..7 agree with independent skyline and row transfers.
+// For squares only, the same model gives A402607.
 //
 // Values: unsigned 64-bit integers; every addition is checked for a carry out
-// of 64 bits (then the program stops and writes nothing).  The values grow by
-// a factor of about 17 per step (a(11) = 25328894911), far below 2^64 for
-// n <= 15.
+// of 64 bits. On overflow the unfinished term is not saved; earlier saved
+// terms remain. The input limit is an encoding limit, not a proof that all
+// intermediate counts fit in 64 bits or a runtime/memory guarantee.
 // Keys: the unit squares are at the bottom of a column (they are the smallest
 // in both dimensions), so only their number is stored (4 bits); every other
 // rectangle is stored as w, h, p with 4 bits each, top to bottom (at most
@@ -51,7 +53,7 @@
 // ---------------------------------------------------------------------------
 //
 // Build:  g++ -O3 -march=native -std=c++17 -Wall -Wextra -Wpedantic -o 402657_01 402657_01.cpp
-//         (option: -DMAXN=n  largest allowed N, default 20, at most 20)
+//         (option: -DMAXN=n  largest allowed N, default 15, at most 15)
 
 #include <cerrno>
 #include <cstdint>
@@ -67,6 +69,9 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <copyfile.h>
+#endif
 
 #ifndef MAXN
 #define MAXN 15
@@ -273,6 +278,7 @@ static std::string compute_term(int n) {
         if (t < res) die("overflow of 64-bit values; nothing written");
         res = t;
     }
+    g_out = nullptr;
     map_free(cur); map_free(nxt);
     std::fprintf(stderr, "402657_01: n=%d: %zu column states in all, at most %zu per column, %lds\n",
                  n, total, peak, (long)(std::time(nullptr) - t0));
@@ -301,8 +307,23 @@ static int parse_n(const char *s) {
     }
     return (int)v;
 }
+// Reject aliases before emitting any message to either standard stream.
+static bool output_conflict(const struct stat &saved) {
+    struct stat out, err;
+    const bool out_alias = fstat(STDOUT_FILENO, &out) == 0 &&
+        out.st_dev == saved.st_dev && out.st_ino == saved.st_ino;
+    const bool err_alias = fstat(STDERR_FILENO, &err) == 0 &&
+        err.st_dev == saved.st_dev && err.st_ino == saved.st_ino;
+    if (!out_alias && !err_alias) return false;
+    if (!err_alias)
+        std::fputs("402657_01: stdout refers to the b-file; refusing to run\n", stderr);
+    else if (!out_alias)
+        std::fputs("402657_01: stderr refers to the b-file; refusing to run\n", stdout);
+    return true;
+}
+
 static void open_lock() {
-    int fd = open(LOCKFILE, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0644);
+    int fd = open(LOCKFILE, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0644);
     if (fd < 0) die_errno("cannot open lock file");
     struct stat st;
     if (fstat(fd, &st) != 0) die_errno("fstat lock file");
@@ -314,13 +335,14 @@ static void open_lock() {
 }
 static std::vector<std::string> read_saved() {
     std::vector<std::string> vals;
-    int fd = open(OUTFILE, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    int fd = open(OUTFILE, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) {
         if (errno == ENOENT) return vals;
         die_errno("cannot open saved file (symlink?)");
     }
     struct stat st;
     if (fstat(fd, &st) != 0) die_errno("fstat saved file");
+    if (output_conflict(st)) std::exit(1);
     if (!S_ISREG(st.st_mode) || st.st_nlink != 1) die("saved file is not a plain regular file");
     if ((size_t)st.st_size > MAX_SAVED_BYTES) die("saved file too large");
     std::string data;
@@ -337,10 +359,8 @@ static std::vector<std::string> read_saved() {
     long expect = 1;
     while (pos < data.size()) {
         size_t nl = data.find('\n', pos);
-        if (nl == std::string::npos) {
-            std::fprintf(stderr, "402657_01: note: ignoring incomplete last line of %s\n", OUTFILE);
-            break;
-        }
+        if (nl == std::string::npos)
+            die("saved file: incomplete last line (file left unchanged)");
         std::string line = data.substr(pos, nl - pos);
         pos = nl + 1;
         size_t sp = line.find(' ');
@@ -359,24 +379,39 @@ static std::vector<std::string> read_saved() {
     return vals;
 }
 static void write_all(const std::vector<std::string> &vals) {
-    struct stat st;
-    if (lstat(OUTFILE, &st) == 0) {
+    // Retain an open descriptor for metadata; never follow a symlink or block
+    // on a FIFO. All cooperating writers hold the stable lock for the run.
+    struct stat st = {};
+    int old_fd = open(OUTFILE, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+    if (old_fd >= 0) {
+        if (fstat(old_fd, &st) != 0) die_errno("fstat result file");
+        if (output_conflict(st)) std::exit(1);
         if (!S_ISREG(st.st_mode) || st.st_nlink != 1)
             die("refusing to replace result file: not a plain regular file");
     } else if (errno != ENOENT) {
-        die_errno("lstat result file");
+        die_errno("open result file");
     }
     std::string tmpl = std::string(OUTFILE) + ".tmpXXXXXX";
     std::vector<char> name(tmpl.begin(), tmpl.end());
     name.push_back('\0');
     int fd = mkstemp(name.data());
     if (fd < 0) die_errno("mkstemp");
-    if (fchmod(fd, 0644) != 0) { unlink(name.data()); die_errno("fchmod"); }
+    const mode_t mode = old_fd >= 0 ? st.st_mode & 0777 : 0644;
+    if (fchmod(fd, mode) != 0) { unlink(name.data()); die_errno("fchmod"); }
     FILE *f = fdopen(fd, "w");
     if (!f) { close(fd); unlink(name.data()); die_errno("fdopen"); }
     for (size_t i = 0; i < vals.size(); i++)
         if (std::fprintf(f, "%zu %s\n", i + 1, vals[i].c_str()) < 0) { std::fclose(f); unlink(name.data()); die("write to temp file failed"); }
     if (std::fflush(f) != 0) { std::fclose(f); unlink(name.data()); die_errno("fflush temp"); }
+#ifdef __APPLE__
+    // Copy ACLs after writing, as the old ACL may deny writes to the new file.
+    if (old_fd >= 0 && fcopyfile(old_fd, fd, nullptr, COPYFILE_ACL) != 0) {
+        std::fclose(f); unlink(name.data()); die_errno("preserve result ACL");
+    }
+#endif
+    if (old_fd >= 0 && close(old_fd) != 0) {
+        std::fclose(f); unlink(name.data()); die_errno("close old result file");
+    }
     if (fsync(fileno(f)) != 0) { std::fclose(f); unlink(name.data()); die_errno("fsync temp"); }
     if (std::fclose(f) != 0) { unlink(name.data()); die_errno("fclose temp"); }
     if (rename(name.data(), OUTFILE) != 0) { unlink(name.data()); die_errno("rename"); }
@@ -387,6 +422,8 @@ static void write_all(const std::vector<std::string> &vals) {
 }
 
 int main(int argc, char **argv) {
+    struct stat saved;
+    if (stat(OUTFILE, &saved) == 0 && output_conflict(saved)) return 1;
     if (argc == 2 && (!std::strcmp(argv[1], "--help") || !std::strcmp(argv[1], "-h"))) { usage(stdout); return 0; }
     if (argc != 2) { usage(stderr); return 1; }
     const int N = parse_n(argv[1]);
