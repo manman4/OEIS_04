@@ -46,7 +46,7 @@
 // force that builds every tiling and tests the condition.
 //
 // Values: unsigned 128-bit integers; every addition is checked for a carry out
-// of 128 bits (then the program stops and writes nothing).
+// of 128 bits (the unfinished term is not saved).
 // Keys: the squares of size 1 are at the bottom of a column (sizes decrease
 // downwards), so only their number is stored (6 bits); every square of size
 // s >= 2 is stored as the 11-bit code s(s-1)/2 + p, top to bottom.  A column
@@ -71,6 +71,9 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <copyfile.h>
+#endif
 
 #ifndef MAXN
 #define MAXN 58
@@ -274,6 +277,7 @@ static std::string compute_term(int n) {
         if (t < res) die("overflow of 128-bit values; nothing written");
         res = t;
     }
+    g_out = nullptr;
     map_free(cur); map_free(nxt);
     std::fprintf(stderr, "402608_01: n=%d: %zu column states in all, at most %zu per column, %lds\n",
                  n, total, peak, (long)(std::time(nullptr) - t0));
@@ -284,7 +288,8 @@ static std::string compute_term(int n) {
 static void usage(FILE *f) {
     std::fprintf(f,
         "usage: 402608_01 N\n"
-        "  computes a(1..N) (tilings of an n X n square, see source) and\n"
+        "  computes a(1..N): monotone square tilings of a size n staircase\n"
+        "  (left-aligned rows of lengths 1,2,...,n from top to bottom)\n"
         "  rewrites %s after each n\n"
         "  1 <= N <= %d; saved lines are re-verified, lines beyond N are kept\n",
         OUTFILE, MAXN);
@@ -302,8 +307,31 @@ static int parse_n(const char *s) {
     }
     return (int)v;
 }
+struct OutputFiles {
+    struct stat output{};
+    struct stat error{};
+    bool have_output = false;
+    bool have_error = false;
+};
+
+static bool same_file(const struct stat &a, const struct stat &b) {
+    return a.st_dev == b.st_dev && a.st_ino == b.st_ino;
+}
+
+static void reject_redirected_output(const struct stat &target, const OutputFiles &streams) {
+    bool out_alias = streams.have_output && same_file(target, streams.output);
+    bool err_alias = streams.have_error && same_file(target, streams.error);
+    if (!out_alias && !err_alias) return;
+    // A diagnostic must not be written into the b-file either.
+    if (!err_alias)
+        std::fprintf(stderr, "402608_01: stdout is redirected to %s\n", OUTFILE);
+    else if (!out_alias)
+        std::fprintf(stdout, "402608_01: stderr is redirected to %s\n", OUTFILE);
+    std::exit(1);
+}
+
 static void open_lock() {
-    int fd = open(LOCKFILE, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0644);
+    int fd = open(LOCKFILE, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0644);
     if (fd < 0) die_errno("cannot open lock file");
     struct stat st;
     if (fstat(fd, &st) != 0) die_errno("fstat lock file");
@@ -313,15 +341,16 @@ static void open_lock() {
         die_errno("flock");
     }
 }
-static std::vector<std::string> read_saved() {
+static std::vector<std::string> read_saved(const OutputFiles &streams) {
     std::vector<std::string> vals;
-    int fd = open(OUTFILE, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    int fd = open(OUTFILE, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
     if (fd < 0) {
         if (errno == ENOENT) return vals;
         die_errno("cannot open saved file (symlink?)");
     }
     struct stat st;
     if (fstat(fd, &st) != 0) die_errno("fstat saved file");
+    reject_redirected_output(st, streams);
     if (!S_ISREG(st.st_mode) || st.st_nlink != 1) die("saved file is not a plain regular file");
     if ((size_t)st.st_size > MAX_SAVED_BYTES) die("saved file too large");
     std::string data;
@@ -338,12 +367,9 @@ static std::vector<std::string> read_saved() {
     long expect = 1;
     while (pos < data.size()) {
         size_t nl = data.find('\n', pos);
-        if (nl == std::string::npos) {
-            std::fprintf(stderr, "402608_01: note: ignoring incomplete last line of %s\n", OUTFILE);
-            break;
-        }
-        std::string line = data.substr(pos, nl - pos);
-        pos = nl + 1;
+        size_t end = nl == std::string::npos ? data.size() : nl;
+        std::string line = data.substr(pos, end - pos);
+        pos = nl == std::string::npos ? end : nl + 1;
         size_t sp = line.find(' ');
         if (sp == std::string::npos || sp == 0 || sp + 1 >= line.size())
             die("saved file: malformed line (file left unchanged)");
@@ -359,28 +385,64 @@ static std::vector<std::string> read_saved() {
     }
     return vals;
 }
-static void write_all(const std::vector<std::string> &vals) {
-    struct stat st;
-    if (lstat(OUTFILE, &st) == 0) {
-        if (!S_ISREG(st.st_mode) || st.st_nlink != 1)
+static void write_all(const std::vector<std::string> &vals, const OutputFiles &streams) {
+    // Keep the metadata source open until mode and ACL have been copied.
+    int old_fd = open(OUTFILE, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK);
+    struct stat old_stat{};
+    if (old_fd >= 0) {
+        if (fstat(old_fd, &old_stat) != 0) die_errno("fstat result file");
+        reject_redirected_output(old_stat, streams);
+        if (!S_ISREG(old_stat.st_mode) || old_stat.st_nlink != 1)
             die("refusing to replace result file: not a plain regular file");
     } else if (errno != ENOENT) {
-        die_errno("lstat result file");
+        die_errno("opening result file metadata");
     }
+
     std::string tmpl = std::string(OUTFILE) + ".tmpXXXXXX";
     std::vector<char> name(tmpl.begin(), tmpl.end());
     name.push_back('\0');
     int fd = mkstemp(name.data());
     if (fd < 0) die_errno("mkstemp");
-    if (fchmod(fd, 0644) != 0) { unlink(name.data()); die_errno("fchmod"); }
     FILE *f = fdopen(fd, "w");
     if (!f) { close(fd); unlink(name.data()); die_errno("fdopen"); }
     for (size_t i = 0; i < vals.size(); i++)
-        if (std::fprintf(f, "%zu %s\n", i + 1, vals[i].c_str()) < 0) { std::fclose(f); unlink(name.data()); die("write to temp file failed"); }
-    if (std::fflush(f) != 0) { std::fclose(f); unlink(name.data()); die_errno("fflush temp"); }
-    if (fsync(fileno(f)) != 0) { std::fclose(f); unlink(name.data()); die_errno("fsync temp"); }
-    if (std::fclose(f) != 0) { unlink(name.data()); die_errno("fclose temp"); }
-    if (rename(name.data(), OUTFILE) != 0) { unlink(name.data()); die_errno("rename"); }
+        if (std::fprintf(f, "%zu %s\n", i + 1, vals[i].c_str()) < 0) {
+            std::fclose(f);
+            unlink(name.data());
+            die("write to temp file failed");
+        }
+
+    const char *failure = nullptr;
+    if (std::fflush(f) != 0)
+        failure = "fflush temp";
+    if (!failure && old_fd >= 0 && fchmod(fd, old_stat.st_mode & 0777) != 0)
+        failure = "preserving result file permissions";
+#ifdef __APPLE__
+    if (!failure && old_fd >= 0 && fcopyfile(old_fd, fd, nullptr, COPYFILE_ACL) != 0)
+        failure = "preserving result file ACL";
+#endif
+    if (!failure && fsync(fd) != 0)
+        failure = "fsync temp";
+    int error = errno;
+    if (old_fd >= 0 && close(old_fd) != 0 && !failure) {
+        failure = "close metadata source";
+        error = errno;
+    }
+    if (std::fclose(f) != 0 && !failure) {
+        failure = "fclose temp";
+        error = errno;
+    }
+    if (failure) {
+        unlink(name.data());
+        errno = error;
+        die_errno(failure);
+    }
+    if (rename(name.data(), OUTFILE) != 0) {
+        error = errno;
+        unlink(name.data());
+        errno = error;
+        die_errno("rename");
+    }
     int dfd = open(".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (dfd < 0) die_errno("open directory");
     if (fsync(dfd) != 0) die_errno("fsync directory");
@@ -388,12 +450,18 @@ static void write_all(const std::vector<std::string> &vals) {
 }
 
 int main(int argc, char **argv) {
+    OutputFiles streams;
+    streams.have_output = fstat(STDOUT_FILENO, &streams.output) == 0;
+    streams.have_error = fstat(STDERR_FILENO, &streams.error) == 0;
+    struct stat target;
+    if (stat(OUTFILE, &target) == 0) reject_redirected_output(target, streams);
+
     if (argc == 2 && (!std::strcmp(argv[1], "--help") || !std::strcmp(argv[1], "-h"))) { usage(stdout); return 0; }
     if (argc != 2) { usage(stderr); return 1; }
     const int N = parse_n(argv[1]);
 
     open_lock();
-    std::vector<std::string> vals = read_saved();
+    std::vector<std::string> vals = read_saved(streams);
     if (vals.size() > (size_t)N)
         std::fprintf(stderr, "402608_01: note: keeping saved lines beyond N=%d (not re-verified)\n", N);
 
@@ -408,7 +476,7 @@ int main(int argc, char **argv) {
             if (std::printf("%d %s (verified)\n", n, v.c_str()) < 0) die("printf failed");
         } else {
             vals.push_back(v);
-            write_all(vals);
+            write_all(vals, streams);
             if (std::printf("%d %s\n", n, v.c_str()) < 0) die("printf failed");
         }
         if (std::fflush(stdout) != 0) die("fflush stdout failed");
