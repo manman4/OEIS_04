@@ -20,16 +20,26 @@
  *  (3) 色の付け替え: 組の名前を入れ替えた分け方は同じなので、まだ空の組は 1 つだけ試す。
  *  (4) 部分和は増える一方なので、ある時点で組 c に入れられない値は、その枝ではずっと入れられない。
  *      よって、すべての組が使われていて、まだ組の決まっていない値 y がどの組にも入れられなければ
- *      打ち切る。また、y が入れられる組がちょうど 1 つなら、その組に入れるしかない
- *      （分岐せずに決める）。
+ *      打ち切る。また、y が入れられる組がちょうど 1 つなら、その組に入れるしかない。
+ *      実装では (5) の順序でこのような y が優先して選ばれ、試す組が 1 通りだけになる
+ *      （実質的に分岐せずに決まる）。
  *  (5) 変数の順序: 入れられる組の数が最も少ない値から決める（同数なら小さい値から）。
  *      小さい値を先に決めると部分和がすぐ広がり、行き詰まりが早く見つかる（実測で数百倍速い）。
  *      どの順で決めても調べ尽くすので、結果は変わらない。
+ *  (6) 大きい値は分岐しない: y >= ceil(n/2) の 2 つの値の和は n を超えるので、組の中で n を作る
+ *      部分集合に大きい値は高々 1 つしか入らない。よって大きい値 y を組 c に入れてよいのは
+ *      「c の小さい値（< ceil(n/2)）の部分和に n - y がない」ときで、これは他の大きい値に依らない。
+ *      そこで小さい値だけを探索で組に分け（部分和 S_c は小さい値だけから作る）、各大きい値 y に
+ *      n - y ∉ S_c となる組 c があればよい。S_c は増える一方なので、すべての組が使われていて
+ *      どの組にも入れられない大きい値があれば、その時点で打ち切る。
+ *      最後に大きい値を入れられる最初の組に入れ、各組の部分和を直接計算して n が作れないことを
+ *      検算する（失敗したら内部エラーで停止）。
  *
  * 検証: n <= 41 を、大きい値から順に決めるだけの素朴な探索（(4)(5) なし）と照合した。
- *       n = 42..60 の「3 組では無理」と n = 42..81 の「4 組で可能」を、小さい値から順に
- *       決めるだけの素朴な探索（(4)(5) なし）で独立に確かめた。f(43) = f(47) = 3 の分け方は
+ *       n = 42..79 の「3 組では無理」と n = 42..81 の「4 組で可能」を、小さい値から順に
+ *       決めるだけの素朴な探索（(4)(5)(6) なし）で独立に確かめた。f(43) = f(47) = 3 の分け方は
  *       Python で直接検算した（f は単調でない）。
+ *       分けられたと判定したときは、毎回その分け方を部分和の直接計算で検算している（事実 (6)）。
  *
  * コンパイル: gcc -O2 -std=c11 -Wall -Wextra -Wpedantic -Werror 400065_01.c -o 400065_01
  * 実行:       ./400065_01 [N]   （N の既定値 60、1 <= N <= MAXN）
@@ -72,11 +82,22 @@ static void or_shift_right(bits *dst, const bits *src, int s) {
     }
 }
 
-/* DFS の状態: R[c]（反転した部分和）、U（まだ組の決まっていない値）、used（使った組の数） */
+static bits LARGE;                 /* 大きい値 ceil(n/2)..n-1（事実 (6)） */
+static int col[MAXN + 1];          /* 小さい値に割り当てた組（検算用） */
+
+/* DFS の状態: R[c]（反転した部分和、小さい値だけから作る）、U（組の決まっていない小さい値）、
+   used（使った組の数） */
 static int dfs(bits *R, bits *U, int used) {
-    /* 決まっていない値を数え、各値の入れられる組の数を調べる */
     int best_y = -1, best_cnt = MAXK + 1;
     int fresh = used < K;                       /* 空の組が残っていれば必ず入れられる */
+    if (!fresh) {
+        /* 事実 (6): 大きい値 y で、どの組にも入れられないもの（すべての c で R_c[y] = 1）があれば打ち切る */
+        for (int i = 0; i < nw; i++) {
+            uint64_t m = LARGE.w[i];
+            for (int c = 0; c < K && m; c++) m &= R[c].w[i];
+            if (m) return 0;
+        }
+    }
     for (int i = nw - 1; i >= 0; i--) {
         uint64_t u = U->w[i];
         while (u) {
@@ -89,7 +110,7 @@ static int dfs(bits *R, bits *U, int used) {
             if (cnt <= best_cnt) { best_cnt = cnt; best_y = y; }  /* 同数なら小さい y（後に見た方） */
         }
     }
-    if (best_y < 0) return 1;                   /* すべて決まった */
+    if (best_y < 0) return 1;                   /* 小さい値がすべて決まった */
     int y = best_y;
     clrb(U, y);
     bits saved;
@@ -97,12 +118,34 @@ static int dfs(bits *R, bits *U, int used) {
         if (c < used && getb(&R[c], y)) continue;
         saved = R[c];
         or_shift_right(&R[c], &saved, y);       /* 事実 (2) */
+        col[y] = c;
         int ok = dfs(R, U, c == used ? used + 1 : used);
+        if (ok) { setb(U, y); return 1; }       /* R は検算で使うので戻さない */
         R[c] = saved;
-        if (ok) { setb(U, y); return 1; }
     }
     setb(U, y);
     return 0;
+}
+
+/* 見つかった分け方（大きい値は入れられる最初の組へ）を、部分和を直接計算して検算する */
+static void verify_partition(const bits *R) {
+    static unsigned char reach[MAXN + 1];
+    int half = (n + 1) / 2;
+    for (int y = half; y <= n - 1; y++) {
+        int c = 0;
+        while (c < K && getb(&R[c], y)) c++;
+        if (c == K) { fprintf(stderr, "\nInternal error: no class for %d (n=%d).\n", y, n); exit(3); }
+        col[y] = c;
+    }
+    for (int c = 0; c < K; c++) {
+        memset(reach, 0, (size_t)n + 1);
+        reach[0] = 1;
+        for (int x = 1; x <= n - 1; x++) {
+            if (col[x] != c) continue;
+            for (int t = n; t >= x; t--) if (reach[t - x]) reach[t] = 1;
+        }
+        if (reach[n]) { fprintf(stderr, "\nInternal error: verification failed (n=%d).\n", n); exit(3); }
+    }
 }
 
 /* {1..n-1} を k 組に分けられるか */
@@ -111,9 +154,14 @@ static int feasible(int k) {
     bits U;
     K = k;
     memset(&U, 0, sizeof U);
-    for (int y = 1; y <= n - 1; y++) setb(&U, y);
+    memset(&LARGE, 0, sizeof LARGE);
+    int half = (n + 1) / 2;                     /* ceil(n/2) */
+    for (int y = 1; y < half; y++) setb(&U, y);
+    for (int y = half; y <= n - 1; y++) setb(&LARGE, y);
     for (int c = 0; c < K; c++) { memset(&R[c], 0, sizeof R[c]); setb(&R[c], n); }   /* S_c = {0} */
-    return dfs(R, &U, 0);
+    int ok = dfs(R, &U, 0);
+    if (ok) verify_partition(R);
+    return ok;
 }
 
 static int parse_limit(const char *text, int *value) {
