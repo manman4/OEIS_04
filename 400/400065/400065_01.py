@@ -15,7 +15,8 @@ A stable .lock file is used for exclusion on macOS/Linux and may remain
 after a run; its presence alone does not mean a process is running.
 Requires CaDiCaL (cadical on PATH) and the formally verified LRAT proof
 checker cake_lpr (CAKE_LPR, PATH, or ~/.local/bin/cake_lpr).
-LIMIT_SECONDS defaults to 60 per solver or proof-checker invocation.
+LIMIT_SECONDS defaults to 0 (no time limit). A positive value limits each
+solver or proof-checker invocation; an explicit 0 also means no limit.
 A timeout stops with exit status 2; unresolved terms are not printed.
 Temporary CNF and proof files are removed automatically.
 
@@ -189,15 +190,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('n1', type=int)
     parser.add_argument('n2', type=int)
-    parser.add_argument('limit', nargs='?', type=float, default=60.0,
-                        metavar='LIMIT_SECONDS')
+    parser.add_argument('limit', nargs='?', type=float, default=0.0,
+                        metavar='LIMIT_SECONDS',
+                        help='seconds per solver/checker call; omitted or 0 means unlimited')
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--output', type=Path, metavar='FILE')
     group.add_argument('--no-bfile', action='store_true')
     args = parser.parse_args()
     n1, n2, limit = args.n1, args.n2, args.limit
-    if not 1 <= n1 <= n2 or not math.isfinite(limit) or limit <= 0:
-        parser.error('need 1 <= N1 <= N2 and a finite positive LIMIT_SECONDS')
+    if not 1 <= n1 <= n2 or not math.isfinite(limit) or limit < 0:
+        parser.error('need 1 <= N1 <= N2 and finite LIMIT_SECONDS >= 0 (0 means unlimited)')
+    if limit == 0:
+        limit = None
     output = None if args.no_bfile else (
         args.output.absolute() if args.output is not None
         else Path(__file__).resolve().with_name('b400065.txt'))
