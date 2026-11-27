@@ -11,8 +11,9 @@
  *      402762_01.c $(pkg-config --libs mpfr gmp) -lm -o 402762_01
  * Run: ./402762_01 NMAX          (0 <= NMAX <= 40; default 20)
  *      ./402762_01 --exact-only NMAX   (slower reference path)
- * Prints a(0),...,a(NMAX) as they finish, then repeats the full list.
- * Progress goes to stderr. No result, checkpoint, or temporary files are made.
+ * Prints a(0),...,a(NMAX) once, on a single final line on stdout.
+ * During computation only complete progress lines are printed to stderr.
+ * No result, checkpoint, or temporary files are made.
  * Large degrees take exponentially longer; 40 is a safe representation limit,
  * not a promise of a quick run. No automatic time limit is applied.
  * The external command `gp -fq -s 64M` must be available on PATH.
@@ -431,11 +432,9 @@ int main(int argc, char **argv)
         results[n] = count_degree(n, exact_only);
         if (clock_gettime(CLOCK_MONOTONIC, &t1) != 0) fail("clock_gettime failed");
         fprintf(stderr, "n=%d: a(n)=%" PRIu64 " (%.3fs)\n", n, results[n], elapsed(&t0, &t1));
-        if (printf("%s%" PRIu64, n ? ", " : "", results[n]) < 0 || fflush(stdout) != 0)
-            fail("cannot write the computed term");
     }
     finish_gp();
-    if (putchar('\n') == EOF || fflush(stderr) == EOF) fail("cannot finish progress output");
+    if (fflush(stderr) == EOF) fail("cannot finish progress output");
     for (int n = 0; n <= nmax; n++)
         if (printf("%s%" PRIu64, n ? ", " : "", results[n]) < 0) fail("cannot write final list");
     if (putchar('\n') == EOF || fflush(stdout) != 0) fail("cannot finish final list");
