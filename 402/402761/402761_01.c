@@ -63,8 +63,10 @@
  * Build: cc -O3 -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Wshadow
  *           -Werror 402761_01.c -o 402761_01
  * Usage:
- *   ./402761_01 NMAX       print f(1), ..., f(NMAX), with 1 <= NMAX <= 64
- *                         Progress goes to stderr; no files are written.
+ *   ./402761_01 NMAX       print f(1), ..., f(NMAX) as they finish, then
+ *                         repeat the complete list on its own final line.
+ *                         1 <= NMAX <= 64. Progress goes to stderr.
+ *                         No files are written.
  *   ./402761_01 --counts N K   exact covering-subset counts for k=0..min(K,N)
  *   ./402761_01 --selftest     test addition in every group of order 1..64
  * Runtime grows rapidly near the upper end; 64 is a representation limit,
@@ -386,6 +388,7 @@ int main(int argc, char **argv)
         return 2;
     }
     binomials();
+    int results[MAXN];
     for (int n = 1; n <= nmax; n++) {
         int best = -1;
         for_groups(n, run_group, &best);
@@ -393,6 +396,7 @@ int main(int argc, char **argv)
             fprintf(stderr, "internal error: no valid threshold for order %d\n", n);
             return 3;
         }
+        results[n - 1] = best;
         if (printf("%s%d", n == 1 ? "" : ", ", best) < 0)
             return 3;
         if (n == nmax && putchar('\n') == EOF)
@@ -400,5 +404,15 @@ int main(int argc, char **argv)
         if (finish_stdout() != 0)
             return 3;
     }
-    return 0;
+    /* All entries are initialized only after their exact computations finish.
+       Keep the complete sequence after all progress output in a shared terminal. */
+    if (fflush(stderr) == EOF)
+        return 3;
+    for (int n = 1; n <= nmax; n++) {
+        if (printf("%s%d", n == 1 ? "" : ", ", results[n - 1]) < 0)
+            return 3;
+    }
+    if (putchar('\n') == EOF)
+        return 3;
+    return finish_stdout();
 }
