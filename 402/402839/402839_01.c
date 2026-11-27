@@ -44,7 +44,10 @@
  * Prime powers and their moduli are <=80 (the final unused pk update is
  * <=80^2). There is at most one T per prime power in {2,...,80}, hence
  * fewer than MAXT=80 sets. All element indices are in 1..n<=80, and all
- * depth indices in 0..n. Recursive depth is at most n+1. Storage is fixed;
+ * depth indices in 0..n. Each of dfs and sub_dfs has at most n+1 active
+ * recursive calls. Since dfs calls sub_dfs at a leaf before unwinding,
+ * together they have at most 2n+2 such frames (162 for n=80), excluding
+ * main and nonrecursive helper calls. Storage is fixed;
  * no search-node counter, large table, dynamic allocation or bit shift
  * is needed. Small loop products such as q*q are also <=81 here.
  * Input is checked before setup. An interrupted search does not publish
