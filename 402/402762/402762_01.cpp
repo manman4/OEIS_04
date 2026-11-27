@@ -7,6 +7,11 @@
  * n = 0..N を計算し、"2, 0, 4, 0, 12, ..." の形で 1 項ずつ標準出力に書き出す（ファイルは作らない）。
  *
  * 使う事実（どれも証明つき、結果を変えない）:
+ *  (0) 浮動小数点の前提: double は IEEE 754 の倍精度で、四則演算は最近接への丸め（u = 2^-53）。
+ *      頼るのはこれだけで、標準ライブラリの三角関数などの精度には頼らない（cos, sin は自前の
+ *      Taylor 級数 expi() で計算し、誤差の上界を証明する）。前提はコンパイル時（is_iec559、
+ *      FLT_EVAL_METHOD == 0、-ffast-math でない）と実行時（丸めモード）に確かめ、満たさなければ止める。
+ *      FMA への縮約があっても誤差の評価は成り立つ。
  *  (1) 対称性: f -> -f と f(z) -> f(-z) は |f| の単位円上の値の集合を変えない。
  *      n >= 1 では、この 2 つが生成する 4 つの変換で移り合う多項式はちょうど 4 個で
  *      （c_0 の符号と c_1 の符号の組がすべて現れる）、条件は 4 個で共通。よって c_0 = c_1 = +1 の
@@ -27,13 +32,15 @@
  *      |f|^2 < 1 - 10^-3 となる点があれば条件不成立とする。係数を下位 7 個（c_2..c_8）と上位に分け、
  *      f = (下位の和) + (上位の和) とする。下位の和は 128 x (M+1) の表（キャッシュに乗る大きさ）にし、
  *      上位の和は上位の組を Gray 符号の順に動かして、係数 1 個の変化分 ±2 z^i を足して更新する。
- *      誤差: 表と、上位の和を直接計算し直すとき（256 組の区切りの先頭と 1024 組ごと）は、単位複素数
- *      e^{iθ_j·i}（std::polar）の ±1 倍の和を直接計算するので誤差は 10^-12 未満。その後の更新は高々 1023 回で、
- *      1 回の誤差は 4·10^-15 未満（|和| <= 31 の丸めと z^i の誤差）。よって f の誤差は 10^-11 未満、
- *      |f| <= n+1 <= 31 より |f|^2 の誤差は 10^-9 未満。10^-3 の余裕があるので、条件を満たす多項式を
- *      誤って除くことはない。
- *      2 段目（事実 (5) で決まらなかったものだけ）: 4097 点 θ_k = πk/4096 で Horner 法により f を
- *      直接計算して同じ判定をする（誤差は同じく 10^-9 よりずっと小さい）。
+ *      誤差: z_j^i は powers() で作り、誤差は 2·10^-13·i 以下（Sum_{i<=30} で 9.3·10^-11 以下）。表と、上位の和を
+ *      直接計算し直すとき（256 組の区切りの先頭と 1024 組ごと）の和の丸めは 10^-13 未満。その後の更新は
+ *      高々 1023 回で、1 回の丸めは 4·10^-15 未満（|和| <= 31）。よって f の誤差は 10^-10 未満、
+ *      |f| <= n+1 <= 31 より |f|^2 の誤差は 10^-8 未満。10^-3 の余裕があるので、計算した |f|^2 が 1 - 10^-3 未満なら
+ *      真の値は 1 未満で、条件を満たす多項式を誤って除くことはない。
+ *      2 段目（事実 (5) で決まらなかったものだけ）: 4097 点 θ_k = πk/4096 で、z = expi(θ_k)（誤差 < 1.5·10^-13）
+ *      での f を Horner 法で計算して同じ判定をする。Horner 法の丸めは 1 段あたり 3u·31 + u·31 < 1.4·10^-14 で
+ *      合計 4.4·10^-13 未満、z の誤差による f の誤差は Sum i·1.5·10^-13·1.01 < 7.1·10^-11 なので、
+ *      f の誤差は 10^-10 未満で同じ結論になる。
  *  (5) 高速な「成立」の保証（fast_check の前のコメント）: 特別な点 θ = 0, π/3, π/2, 2π/3, π での
  *      h, h', h'' の符号を整数で正確に求め、h = 0 となる点の近くは 3 階微分の上界 L3 = 2 Sum d^3 |A_d|
  *      による Taylor 評価で h >= 0 を示す。残りの区間は 2 次の Taylor 展開と丸め誤差の上界で h > 0 を示す
@@ -55,10 +62,13 @@
  *  ・n <= 21 で、1 段目を通ったすべての代表について、(5) の答え（成立／不成立）が (3) と一致することを確かめた。
  *  ・n <= 26 を、(6)(7) と表・格子の工夫を入れる前の版（1 スレッド）と照合した。
  *  ・n <= 24 で、スレッド数 1, 3, 7 の結果が一致することを確かめた。
- *  ・AddressSanitizer / UndefinedBehaviorSanitizer つきで n <= 18、ThreadSanitizer つきで n <= 16 を実行した。
+ *  ・AddressSanitizer / UndefinedBehaviorSanitizer つきで n <= 18、ThreadSanitizer つきで n <= 17 を実行した。
+ *  ・-march=native -ffp-contract=fast（FMA への縮約あり）でも n <= 24 の結果は同じ。
+ *  ・expi(), powers() の誤差を long double の cosl, sinl と比べると 10^-15 程度で、証明した上界より十分小さい
+ *    （正しさの根拠ではなく、実装の確認として）。
  *  ・n = 0..27: 2, 0, 4, 0, 12, 8, 28, 16, 108, 56, 324, 416, 964, 784, 3960, 3984, 11236, 14168,
  *    37516, 49040, 142932, 160504, 473800, 756560, 1700192, 2296008, 6417748, 8923760
- *    （2 スレッドで n <= 27 が約 16 秒。n が 2 増えるごとに約 3.5 倍で、n <= 30 は数分の見込み）。
+ *    （2 スレッドで n <= 27 が約 18 秒。n が 2 増えるごとに約 3.5 倍で、n <= 30 は数分の見込み）。
  *
  * コンパイル: g++ -O2 -std=c++17 -Wall -Wextra -Wpedantic -Werror -pthread 402762_01.cpp -o 402762_01
  * 実行:       ./402762_01 [N [THREADS]]   （N の既定値 20、0 <= N <= 30。THREADS の既定値は CPU 数、1..256）
@@ -66,7 +76,9 @@
 #include <atomic>
 #include <cerrno>
 #include <cmath>
-#include <complex>
+#include <cfenv>
+#include <cfloat>
+#include <limits>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -411,6 +423,49 @@ bool exact_check(int n, const int *c) {
     return nonneg_on_interval(g);
 }
 
+// ---------------- 誤差の上界が証明できる浮動小数点計算 ----------------
+// 前提（事実 (0)）: double は IEEE 754 の倍精度で、四則演算は最近接への丸め（単位丸め誤差 u = 2^-53）。
+//   標準ライブラリの三角関数などの精度には頼らない。前提はコンパイル時と実行時（main の先頭）に確かめる。
+//   a*b+c が FMA に縮約されても、下の誤差評価はそのまま成り立つ（丸めが 1 回減るだけ）。
+static_assert(std::numeric_limits<double>::is_iec559, "IEEE 754 double is required");
+#if !defined(FLT_EVAL_METHOD) || FLT_EVAL_METHOD != 0
+#error "FLT_EVAL_METHOD must be 0 (no extended-precision intermediates)"
+#endif
+#ifdef __FAST_MATH__
+#error "Do not compile with -ffast-math."
+#endif
+
+struct Cx { double re, im; };
+inline Cx cadd(Cx x, Cx y) { return Cx{x.re + y.re, x.im + y.im}; }
+inline Cx cscale(double s, Cx x) { return Cx{s * x.re, s * x.im}; }   // s = ±1, ±2 なら丸めなし
+// 積: 各成分の誤差は 2u(|ac|+|bd|) 以下（FMA の有無によらない）。よって |誤差| <= 2√2 u|x||y| < 3u|x||y|
+inline Cx cmul(Cx x, Cx y) { return Cx{x.re * y.re - x.im * y.im, x.re * y.im + x.im * y.re}; }
+inline double norm2(Cx x) { return x.re * x.re + x.im * x.im; }
+
+// e^{it}（0 <= t <= 3.2）を Taylor 級数で計算する。|expi(t) - e^{it}| < 1.5·10^-13。
+//   cos, sin の各 22 項 t^j/j! を、前の項に t^2 を掛けて整数 (j-1)j で割って作る（整数は double で正確）。
+//   第 k 項の相対誤差は (1+u)^{3k} - 1 <= 3.01ku、22 項の和の丸めは 21.1u Sum|項| 以下。
+//   t <= 3.2 で Sum|項| <= cosh 3.2 < 12.3、Sum k|項| <= (t/2)cosh t < 19.7 なので、各成分の誤差は
+//   (3.01·19.7 + 21.1·12.3·1.01) u < 330u < 10^-13。打ち切り誤差は交代級数の次の項 3.2^44/44! < 10^-32 以下。
+Cx expi(double t) {
+    if (!(t >= 0.0 && t <= 3.2)) { std::fprintf(stderr, "Internal error: expi argument out of range.\n"); std::exit(3); }
+    const double t2 = t * t;
+    double term = 1.0, c = 1.0;
+    for (int k = 1; k <= 21; k++) { term = term * t2 / ((2.0 * k - 1.0) * (2.0 * k)); c += (k & 1) ? -term : term; }
+    term = t;
+    double s = t;
+    for (int k = 1; k <= 21; k++) { term = term * t2 / ((2.0 * k) * (2.0 * k + 1.0)); s += (k & 1) ? -term : term; }
+    return Cx{c, s};
+}
+
+// p[d] ≈ e^{idt}（d = 0..n <= 30）を e^{it} の掛け算で作る。|p[d] - e^{idt}| <= 2·10^-13·d。
+//   帰納法: e_{d+1} <= e_d |p_1| + e_1 + 3u |p_d||p_1| <= e_d (1 + 1.5·10^-13) + 1.5·10^-13 + 3.4·10^-16。
+void powers(double t, int n, Cx *p) {
+    p[0] = Cx{1.0, 0.0};
+    if (n >= 1) p[1] = expi(t);
+    for (int d = 2; d <= n; d++) p[d] = cmul(p[d - 1], p[1]);
+}
+
 // 事実 (5) で使う固定の格子: [0, π] を K 個の小区間 [a_k, b_k] に分け、中心 m_k での cos(d m_k), sin(d m_k) を表にする
 struct Grid {
     int n = 0, K = 0;
@@ -420,7 +475,7 @@ struct Grid {
 
 void build_grid(Grid &G, int n) {
     G.n = n;
-    G.K = static_cast<int>(std::ceil(M_PI * n / 1.0));    // 幅は約 1/n
+    G.K = static_cast<int>(M_PI * n) + 1;              // 幅は 1/n 未満
     G.a.resize(G.K); G.b.resize(G.K); G.m.resize(G.K); G.r.resize(G.K);
     G.cs.assign(static_cast<size_t>(G.K) * (n + 1), 0.0);
     G.sn.assign(static_cast<size_t>(G.K) * (n + 1), 0.0);
@@ -430,9 +485,11 @@ void build_grid(Grid &G, int n) {
         double m = 0.5 * (a + b);
         G.a[k] = a; G.b[k] = b; G.m[k] = m;
         G.r[k] = std::max(m - a, b - m) + 1e-15;
+        Cx p[32];
+        powers(m, n, p);                               // 誤差 <= 2·10^-13·d
         for (int d = 0; d <= n; d++) {
-            G.cs[static_cast<size_t>(k) * (n + 1) + d] = std::cos(d * m);
-            G.sn[static_cast<size_t>(k) * (n + 1) + d] = std::sin(d * m);
+            G.cs[static_cast<size_t>(k) * (n + 1) + d] = p[d].re;
+            G.sn[static_cast<size_t>(k) * (n + 1) + d] = p[d].im;
         }
     }
 }
@@ -450,9 +507,11 @@ void build_grid(Grid &G, int n) {
 //         h(m+t) >= min_{|t|<=r} (h(m) + h'(m)t + h''(m)t^2/2) - (丸め誤差) - L3 r^3/6
 //       が正なら、その小区間で h > 0。小区間はまず固定の格子（表の cos, sin を使う）で、
 //       除外範囲にかかる格子や正にならない格子は、その部分を二分しながら調べる（数と深さに上限）。
-//       丸め誤差: 表の cos(dm), sin(dm) は dm の丸め（< 10^-14）と 1 ulp の誤差、二分のときの e^{idm} は
-//       e^{im} の d 乗を掛け算で作り、積 1 回の相対誤差は √5·2^-53 以下なので d <= 30 で誤差 < 2·10^-14。
-//       和と 2 次式の最小値の計算の丸めも含め、係数の絶対値の和の 10^-12 倍で抑える。
+//       丸め誤差（事実 (0) の前提だけを使う）: cos(dm), sin(dm) は powers() で作り、誤差 <= 2·10^-13·30 = 6·10^-12。
+//       よって h(m), h'(m), h''(m) の誤差は、和の丸め（<= 62u·係数の絶対値の和）も含めて
+//       それぞれ S0, S1, S2（係数の絶対値の和）の 6.1·10^-12 倍以下。r <= 1/(2n) + 10^-15 なので
+//       L3 r^3/6 <= S0 で、2 次式の最小値と最後の引き算の丸め（相対 10u 程度）は 10^-14 (S0 + S1 r + S2 r^2)
+//       以下。合わせて余裕 10^-11 (S0 + S1 r + S2 r^2) で覆う。
 int fast_check(int n, const long long *A, const Grid &G) {
     static const int cos2[12] = {2, 0, 1, 0, -1, 0, -2, 0, -1, 0, 1, 0};   // 2cos(aπ/6)（a は偶数か 3 の倍数のみ使う）
     static const int sig[12] = {0, 0, 1, 1, 1, 0, 0, 0, -1, -1, -1, 0};     // sin(aπ/6) の符号（同上）
@@ -493,7 +552,7 @@ int fast_check(int n, const long long *A, const Grid &G) {
     auto cell_ok = [&](double c0, double c1, double c2, double r) {
         double q = std::min(c0 - c1 * r + c2 * r * r / 2, c0 + c1 * r + c2 * r * r / 2);
         if (c2 > 0 && std::fabs(c1) < c2 * r) q = std::min(q, c0 - c1 * c1 / (2 * c2));
-        return q - 1e-12 * (S0 + S1 * r + S2 * r * r) - L3 * r * r * r / 6.0 > 0;
+        return q - 1e-11 * (S0 + S1 * r + S2 * r * r) - L3 * r * r * r / 6.0 > 0;
     };
     struct Cell { double a, b; int depth; };
     Cell stk[128];
@@ -509,12 +568,9 @@ int fast_check(int n, const long long *A, const Grid &G) {
             // m は [a, b] 内。差の丸め誤差（<= 4.5·10^-16）を 10^-15 で覆って、[a, b] ⊂ [m-r, m+r] とする
             double m = 0.5 * (cl.a + cl.b), r = std::max(m - cl.a, cl.b - m) + 1e-15;
             double c0 = n, c1 = 0, c2 = 0;
-            const std::complex<double> w = std::polar(1.0, m);
-            std::complex<double> zd = 1.0;
-            for (int d = 1; d <= n; d++) {
-                zd *= w;
-                c0 += w0[d] * zd.real(); c1 += w1[d] * zd.imag(); c2 += w2[d] * zd.real();
-            }
+            Cx p[32];
+            powers(m, n, p);                           // 誤差 <= 2·10^-13·d
+            for (int d = 1; d <= n; d++) { c0 += w0[d] * p[d].re; c1 += w1[d] * p[d].im; c2 += w2[d] * p[d].re; }
             if (cell_ok(c0, c1, c2, r)) continue;
             if (cl.depth >= 50 || cl.b - cl.a < 1e-10 || sp + 2 > 128) return false;
             stk[sp++] = Cell{cl.a, m, cl.depth + 1};
@@ -584,13 +640,13 @@ inline uint64_t rev_rep(uint64_t B, int n) {
 long long count_quarter(int n, int nthreads) {
     const int FINE = 4096;                             // 2 段目の標本点 θ_k = π k / FINE（k = 0..FINE）
     // 2 段目の点を、粗い点から細かい点への順（ビット反転順）に並べる（除外が早く決まりやすい）
-    static std::vector<std::complex<double>> fine;
+    static std::vector<Cx> fine;
     if (fine.empty()) {
         std::vector<int> ks;
         ks.push_back(0); ks.push_back(FINE);
         for (int step = FINE; step > 1; step >>= 1)
             for (int k = step / 2; k < FINE; k += step) ks.push_back(k);
-        for (int k : ks) fine.push_back(std::polar(1.0, M_PI * k / FINE));
+        for (int k : ks) fine.push_back(expi(M_PI * k / FINE));                  // 誤差 < 1.5·10^-13
     }
     // 標本点 θ_j = π j / M（j = 0..M、M は 2 の冪で M >= 16(n+1)）
     int M = 1;
@@ -605,16 +661,14 @@ long long count_quarter(int n, int nthreads) {
     const int F = n - 1;                               // 動かす係数 c_2..c_n の個数
     const int L = F < 7 ? F : 7, H = F - L;            // 下位の表は 128 x P 個（キャッシュに乗る大きさ）
     const size_t NL = static_cast<size_t>(1) << L;
-    std::vector<std::complex<double>> zpow(static_cast<size_t>(P) * (n + 1));   // z_j^i
-    for (int j = 0; j < P; j++)
-        for (int i = 0; i <= n; i++)
-            zpow[static_cast<size_t>(j) * (n + 1) + i] = std::polar(1.0, M_PI * j * i / M);
-    std::vector<std::complex<double>> lo(NL * static_cast<size_t>(P));          // lo[lm][j]
+    std::vector<Cx> zpow(static_cast<size_t>(P) * (n + 1));                    // z_j^i（誤差 <= 2·10^-13·i）
+    for (int j = 0; j < P; j++) powers(M_PI * j / M, n, &zpow[static_cast<size_t>(j) * (n + 1)]);
+    std::vector<Cx> lo(NL * static_cast<size_t>(P));                           // lo[lm][j]
     for (size_t lm = 0; lm < NL; lm++)
         for (int j = 0; j < P; j++) {
-            const std::complex<double> *z = &zpow[static_cast<size_t>(j) * (n + 1)];
-            std::complex<double> s = z[0] + z[1];                                // c_0 = c_1 = +1
-            for (int t = 0; t < L; t++) s += ((lm >> t) & 1 ? -1.0 : 1.0) * z[2 + t];
+            const Cx *z = &zpow[static_cast<size_t>(j) * (n + 1)];
+            Cx s = cadd(z[0], z[1]);                                             // c_0 = c_1 = +1
+            for (int t = 0; t < L; t++) s = cadd(s, cscale((lm >> t) & 1 ? -1.0 : 1.0, z[2 + t]));
             lo[lm * P + j] = s;
         }
     Grid grid;
@@ -625,7 +679,7 @@ long long count_quarter(int n, int nthreads) {
     std::vector<long long> partial(static_cast<size_t>(nthreads), 0);
 
     auto worker = [&](int tid) {
-        std::vector<std::complex<double>> hi(static_cast<size_t>(P));
+        std::vector<Cx> hi(static_cast<size_t>(P));
         std::vector<int> order = order0;
         int c[32];
         long long good = 0;                            // 重み（事実 (6)）つきの数
@@ -639,23 +693,24 @@ long long count_quarter(int n, int nthreads) {
                 if (idx == i0 || (idx & 1023) == 0) {
                     // 上位の和を直接計算する（区切りの先頭と 1024 組ごと）
                     for (int j = 0; j < P; j++) {
-                        const std::complex<double> *z = &zpow[static_cast<size_t>(j) * (n + 1)];
-                        std::complex<double> s = 0;
-                        for (int t = 0; t < H; t++) s += ((hm >> t) & 1 ? -1.0 : 1.0) * z[2 + L + t];
+                        const Cx *z = &zpow[static_cast<size_t>(j) * (n + 1)];
+                        Cx s{0.0, 0.0};
+                        for (int t = 0; t < H; t++) s = cadd(s, cscale((hm >> t) & 1 ? -1.0 : 1.0, z[2 + L + t]));
                         hi[static_cast<size_t>(j)] = s;
                     }
                 } else {
                     // 直前の組と 1 個の係数だけ違う: hi += (新しい符号 - 古い符号) z^i
                     const int t = __builtin_ctzll(idx);
                     const double dlt = ((hm >> t) & 1) ? -2.0 : 2.0;
-                    for (int j = 0; j < P; j++) hi[static_cast<size_t>(j)] += dlt * zpow[static_cast<size_t>(j) * (n + 1) + 2 + L + t];
+                    for (int j = 0; j < P; j++)
+                        hi[static_cast<size_t>(j)] = cadd(hi[static_cast<size_t>(j)], cscale(dlt, zpow[static_cast<size_t>(j) * (n + 1) + 2 + L + t]));
                 }
                 for (size_t lm = 0; lm < NL; lm++) {
-                    const std::complex<double> *row = &lo[lm * P];
+                    const Cx *row = &lo[lm * P];
                     bool rejected = false;
                     for (size_t q = 0; q < order.size(); q++) {
                         const int j = order[q];
-                        if (std::norm(row[j] + hi[static_cast<size_t>(j)]) < thr) {
+                        if (norm2(cadd(row[j], hi[static_cast<size_t>(j)])) < thr) {
                             if (q > 0) std::swap(order[q], order[q / 2]);           // よく効く点を前へ
                             rejected = true;
                             break;
@@ -676,9 +731,10 @@ long long count_quarter(int n, int nthreads) {
                     // 事実 (4) の 2 段目: FINE+1 点で Horner 法により f を直接計算する
                     rejected = false;
                     for (size_t k = 0; k < fine.size() && !rejected; k++) {
-                        std::complex<double> z = fine[k], v = 0;
-                        for (int i = n; i >= 0; i--) v = v * z + static_cast<double>(c[i]);
-                        if (std::norm(v) < thr) rejected = true;
+                        const Cx z = fine[k];
+                        Cx v{0.0, 0.0};
+                        for (int i = n; i >= 0; i--) { v = cmul(v, z); v.re += static_cast<double>(c[i]); }
+                        if (norm2(v) < thr) rejected = true;
                     }
                     if (rejected) continue;
                     if (exact_check(n, c)) good += w;  // 事実 (2)(3)
@@ -712,6 +768,10 @@ int main(int argc, char **argv) {
     }
     // D_d(y) = 2T_d(y/2)（2cos(dθ) = D_d(2cos θ)）: D_0 = 2, D_1 = y, D_{d+1} = y D_d - D_{d-1}
     // （係数の絶対値は 2^d 以下で、64 bit に十分収まる）
+    if (std::fegetround() != FE_TONEAREST) {          // 事実 (0) の前提
+        std::fprintf(stderr, "Rounding mode must be round-to-nearest.\n");
+        return 1;
+    }
     std::memset(Dk, 0, sizeof Dk);
     Dk[0][0] = 2; Dk[1][1] = 1;
     for (int d = 1; d + 1 < 32; d++)
