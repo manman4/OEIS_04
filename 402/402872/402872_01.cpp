@@ -53,9 +53,9 @@
  *       時間の目安: 2 プロセスで n <= 21 が約 4 秒、n <= 23 が約 70 秒。n が 1 増えるごとに約 2〜3 倍。
  *
  * コンパイル（nauty のライブラリが必要。Debian/Ubuntu は libnauty-dev、macOS は brew install nauty）:
- *   g++ -O2 -std=c++17 -Wall -Wextra -Wpedantic -Werror erdos572_01.cpp -o erdos572_01 -lnauty
+ *   g++ -O2 -std=c++17 -Wall -Wextra -Wpedantic -Werror 402872_01.cpp -o 402872_01 -lnauty
  *   （ヘッダやライブラリの場所が標準でなければ -I/-L を足す。例: -I$(brew --prefix)/include -L$(brew --prefix)/lib）
- * 実行: ./erdos572_01 [NMAX [PROCS]]   （NMAX の既定値 16、1 <= NMAX <= 32。PROCS の既定値は CPU 数）
+ * 実行: ./402872_01 [NMAX [PROCS]]   （NMAX の既定値 16、1 <= NMAX <= 32。PROCS の既定値は CPU 数）
  */
 #include <nauty/nauty.h>
 
