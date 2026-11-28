@@ -223,7 +223,10 @@ int solve(int lower) {
             std::vector<int> T;
             for (int n : U) if (vp(n, p) == e) T.push_back(n);
             // 0 以外の符号で Sum δ (n/p^e)^{-1} ≡ 0 (mod p) にできるか（剰余と「空でない」の DP）
-            std::vector<char> any(p, 0), ne(p, 0);     // any: 空を含む到達、ne: 空でない到達
+            // any は空集合の剰余 0 だけを保持し、反復中も変わらない。
+            // ne は処理済みの元の非空な符号つき部分集合で到達する剰余。
+            // n2 は ne を引き継ぎ、any または ne の状態に今の元を加えた状態も含める。
+            std::vector<char> any(p, 0), ne(p, 0);
             any[0] = 1;
             for (int n : T) {
                 int r = (n / pe) % p, inv = 1;
